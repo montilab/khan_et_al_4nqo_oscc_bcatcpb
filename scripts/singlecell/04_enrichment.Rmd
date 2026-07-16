@@ -1,0 +1,270 @@
+---
+title: "4NQO OSCC Bcat - scRNA-seq Pathway Enrichment Analysis"
+author: "M. Muzamil Khan"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    code_folding: hide
+    theme: flatly
+    toc: yes
+    toc_float: true
+  html_notebook:
+    code_folding: hide
+    theme: flatly
+    toc: yes
+    toc_float: true
+  pdf_document:
+    toc: yes
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_knit$set(root.dir = normalizePath("../.."))
+```
+
+```{r libraries, warning=FALSE, message=FALSE}
+library(Seurat)
+library(ggplot2)
+library(dplyr)
+library(DT)
+library(hypeR)
+library(patchwork)
+PATH <- getwd()
+```
+
+## Overview
+
+This document performs pathway enrichment analysis on single-cell differential expression results using hypeR (ORA) and gene module scoring. Single-cell DE results are loaded from `03_diffanalysis.{Rmd, html}`.
+
+Analyses performed:
+
+1. **ORA** on cell-type-specific DEGs using MSigDB Hallmarks and KEGG pathways
+2. **Module scoring** of Wnt/beta-catenin and cancer-related gene sets across cells
+3. **Cell proportion analysis** (differential abundance) between experimental groups
+
+```{r load-data}
+seurat_merged <- readRDS(file.path(PATH, "data/seurat_annotated.RDS"))
+de_oscc_ctrl  <- readRDS(file.path(PATH, "results/sc_de_4nqo_vs_ctrl.RDS"))
+de_cpb_oscc   <- readRDS(file.path(PATH, "results/sc_de_4nqo_cpb_vs_4nqo.RDS"))
+de_cpb_ctrl   <- readRDS(file.path(PATH, "results/sc_de_4nqo_cpb_vs_ctrl.RDS"))
+
+cell_types <- levels(seurat_merged$cell_type)
+```
+
+```{r genesets}
+msigdb_H  <- msigdb_gsets(species = "Mus musculus", category = "H")
+msigdb_C2 <- msigdb_gsets(species = "Mus musculus", category = "C2",
+                            subcategory = "CP:KEGG")
+```
+
+## ORA: 4NQO vs. Control - Epithelial Cells {.tabset .tabset-fade .tabset-pills}
+
+```{r ora-epi-oscc-ctrl}
+epi_up   <- de_oscc_ctrl %>%
+  filter(cell_type == "Epithelial", p_val_adj <= 0.05, avg_log2FC >= 0.5) %>%
+  pull(gene)
+epi_down <- de_oscc_ctrl %>%
+  filter(cell_type == "Epithelial", p_val_adj <= 0.05, avg_log2FC <= -0.5) %>%
+  pull(gene)
+```
+
+### Hallmarks - Upregulated
+
+```{r ora-epi-up-H}
+if (length(epi_up) > 0) {
+  hyp_epi_up_H <- hypeR(epi_up,
+                          gsets      = msigdb_H,
+                          test       = "hypergeometric",
+                          background = nrow(seurat_merged),
+                          fdr        = 0.05,
+                          quiet      = TRUE)
+  hyp_dots(hyp_epi_up_H, title = "Epithelial (Up) - 4NQO vs. Control - Hallmarks")
+} else {
+  cat("No upregulated genes to test.\n")
+}
+```
+
+### Hallmarks - Downregulated
+
+```{r ora-epi-down-H}
+if (length(epi_down) > 0) {
+  hyp_epi_down_H <- hypeR(epi_down,
+                            gsets      = msigdb_H,
+                            test       = "hypergeometric",
+                            background = nrow(seurat_merged),
+                            fdr        = 0.05,
+                            quiet      = TRUE)
+  hyp_dots(hyp_epi_down_H, title = "Epithelial (Down) - 4NQO vs. Control - Hallmarks")
+} else {
+  cat("No downregulated genes to test.\n")
+}
+```
+
+### KEGG - Upregulated
+
+```{r ora-epi-up-C2}
+if (length(epi_up) > 0) {
+  hyp_epi_up_C2 <- hypeR(epi_up,
+                           gsets      = msigdb_C2,
+                           test       = "hypergeometric",
+                           background = nrow(seurat_merged),
+                           fdr        = 0.05,
+                           quiet      = TRUE)
+  hyp_dots(hyp_epi_up_C2, title = "Epithelial (Up) - 4NQO vs. Control - KEGG")
+}
+```
+
+## ORA: 4NQO + CPB vs. 4NQO - Epithelial Cells {.tabset .tabset-fade .tabset-pills}
+
+```{r ora-cpb-epi}
+cpb_epi_up   <- de_cpb_oscc %>%
+  filter(cell_type == "Epithelial", p_val_adj <= 0.05, avg_log2FC >= 0.5) %>%
+  pull(gene)
+cpb_epi_down <- de_cpb_oscc %>%
+  filter(cell_type == "Epithelial", p_val_adj <= 0.05, avg_log2FC <= -0.5) %>%
+  pull(gene)
+```
+
+### Hallmarks - Upregulated
+
+```{r ora-cpb-epi-up-H}
+if (length(cpb_epi_up) > 0) {
+  hyp_cpb_epi_up_H <- hypeR(cpb_epi_up,
+                              gsets      = msigdb_H,
+                              test       = "hypergeometric",
+                              background = nrow(seurat_merged),
+                              fdr        = 0.05,
+                              quiet      = TRUE)
+  hyp_dots(hyp_cpb_epi_up_H, title = "Epithelial (Up) - 4NQO_CPB vs. 4NQO - Hallmarks")
+} else {
+  cat("No upregulated genes to test.\n")
+}
+```
+
+### Hallmarks - Downregulated
+
+```{r ora-cpb-epi-down-H}
+if (length(cpb_epi_down) > 0) {
+  hyp_cpb_epi_down_H <- hypeR(cpb_epi_down,
+                                gsets      = msigdb_H,
+                                test       = "hypergeometric",
+                                background = nrow(seurat_merged),
+                                fdr        = 0.05,
+                                quiet      = TRUE)
+  hyp_dots(hyp_cpb_epi_down_H, title = "Epithelial (Down) - 4NQO_CPB vs. 4NQO - Hallmarks")
+} else {
+  cat("No downregulated genes to test.\n")
+}
+```
+
+## Gene Module Scoring {.tabset .tabset-fade .tabset-pills}
+
+### Wnt / Beta-catenin Module Score
+
+```{r wnt-module-score}
+wnt_module <- list(
+  Wnt_targets = c("Axin2", "Lgr5", "Myc", "Ccnd1", "Cd44",
+                   "Tcf7",  "Lef1", "Nkd1", "Sp5",   "Dkk1")
+)
+seurat_merged <- AddModuleScore(seurat_merged,
+                                 features = wnt_module,
+                                 name     = "Wnt_score",
+                                 nbin     = 24,
+                                 ctrl     = 100)
+
+FeaturePlot(seurat_merged, features = "Wnt_score1", reduction = "umap",
+             min.cutoff = "q5", max.cutoff = "q95") +
+  labs(title = "Wnt/Beta-catenin Module Score")
+
+VlnPlot(seurat_merged, features = "Wnt_score1",
+         group.by = "group", pt.size = 0) +
+  labs(title = "Wnt Module Score by Group")
+```
+
+### EMT Module Score
+
+```{r emt-module-score}
+emt_module <- list(
+  EMT = c("Cdh2", "Vim", "Fn1", "Zeb1", "Zeb2",
+           "Twist1", "Snai1", "Snai2", "Mmp2", "Mmp9")
+)
+seurat_merged <- AddModuleScore(seurat_merged,
+                                 features = emt_module,
+                                 name     = "EMT_score",
+                                 nbin     = 24,
+                                 ctrl     = 100)
+
+FeaturePlot(seurat_merged, features = "EMT_score1", reduction = "umap",
+             min.cutoff = "q5", max.cutoff = "q95") +
+  labs(title = "EMT Module Score")
+
+VlnPlot(seurat_merged, features = "EMT_score1",
+         group.by = "group", pt.size = 0) +
+  labs(title = "EMT Module Score by Group")
+```
+
+### Proliferation Module Score
+
+```{r prolif-module-score}
+prolif_module <- list(
+  Proliferation = c("Mki67", "Top2a", "Pcna", "Cdk1", "Ccnb1",
+                     "Ccna2", "Birc5", "Ube2c", "Cenpf", "Plk1")
+)
+seurat_merged <- AddModuleScore(seurat_merged,
+                                 features = prolif_module,
+                                 name     = "Prolif_score",
+                                 nbin     = 24,
+                                 ctrl     = 100)
+
+FeaturePlot(seurat_merged, features = "Prolif_score1", reduction = "umap",
+             min.cutoff = "q5", max.cutoff = "q95") +
+  labs(title = "Proliferation Module Score")
+```
+
+### Wnt Score by Cell Type and Group
+
+```{r wnt-score-celltype}
+ggplot(seurat_merged@meta.data,
+        aes(x = group, y = Wnt_score1, fill = group)) +
+  geom_violin(trim = FALSE) +
+  geom_boxplot(width = 0.1, fill = "white", outlier.shape = NA) +
+  facet_wrap(~cell_type, scales = "free_y") +
+  labs(title = "Wnt Module Score by Cell Type and Group",
+       x = "Group", y = "Wnt Score") +
+  theme_bw() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1),
+        legend.position = "none")
+```
+
+## Cell Proportion Analysis {.tabset}
+
+### Proportion Changes
+
+```{r cell-proportions}
+prop_table <- seurat_merged@meta.data %>%
+  group_by(group, cell_type) %>%
+  summarise(n = n(), .groups = "drop") %>%
+  group_by(group) %>%
+  mutate(pct = n / sum(n) * 100)
+
+ggplot(prop_table, aes(x = group, y = pct, fill = cell_type)) +
+  geom_bar(stat = "identity", position = "stack") +
+  labs(title = "Cell Type Proportions by Group",
+       x = "Group", y = "Proportion (%)") +
+  theme_bw()
+
+DT::datatable(prop_table, caption = "Cell Type Proportions by Experimental Group")
+```
+
+## Save Final Object
+
+```{r save, eval=FALSE}
+saveRDS(seurat_merged, file.path(PATH, "data/seurat_final.RDS"))
+message("Saved final Seurat object with module scores")
+```
+
+## Session Info
+
+```{r session-info}
+sessionInfo()
+```

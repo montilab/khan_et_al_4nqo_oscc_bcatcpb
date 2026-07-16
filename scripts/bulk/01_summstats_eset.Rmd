@@ -1,0 +1,176 @@
+---
+title: "4NQO OSCC Bcat - Bulk RNA-seq Summary Statistics and eSet Creation"
+author: "M. Muzamil Khan"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    code_folding: hide
+    theme: flatly
+    toc: yes
+    toc_float: true
+  html_notebook:
+    code_folding: hide
+    theme: flatly
+    toc: yes
+    toc_float: true
+  pdf_document:
+    toc: yes
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_knit$set(root.dir = normalizePath("../.."))
+```
+
+```{r libraries, warning=FALSE, message=FALSE}
+library(ggplot2)
+library(dplyr)
+library(DT)
+library(Biobase)
+library(reshape2)
+library(hypeR)
+PATH <- getwd()
+```
+
+## Overview
+
+This document summarizes the bulk RNA-seq data quality metrics and creates the ExpressionSet object used in downstream analyses for the 4NQO-induced oral squamous cell carcinoma (OSCC) study with conditional beta-catenin perturbation.
+
+The experiment includes the following groups:
+
+- **Control**: Wild-type mice without 4NQO treatment
+- **4NQO**: Wild-type mice treated with 4NQO to induce OSCC
+- **4NQO + CPB**: 4NQO-treated mice with conditional perturbation of beta-catenin (Ctnnb1)
+
+Paired-end reads were aligned to the mouse genome (mm10/GRCm38) using STAR and quantified with featureCounts.
+
+## Load Data {.tabset}
+
+### Feature Counts Metrics
+
+```{r load-data}
+featureCounts_metrics <- read.table(file.path(PATH, "data/featureCounts_metrics.txt"),
+                                     header = TRUE, sep = "\t")
+annotData <- read.csv(file.path(PATH, "data/sample_annotations.csv"), header = TRUE)
+assaydata  <- read.table(file.path(PATH, "data/features_counts.txt"),
+                          header = TRUE, row.names = 1)
+
+rownames(annotData) <- annotData$Sample_ID
+colnames(assaydata) <- gsub("\\.", "_", colnames(assaydata))
+
+annotData$Group <- factor(annotData$Group, levels = c("Control", "4NQO", "4NQO_CPB"))
+```
+
+### Sample Annotations
+
+```{r annotations}
+DT::datatable(annotData, caption = "Sample Annotations")
+```
+
+## Reads Summary {.tabset .tabset-fade .tabset-pills}
+
+### Reads per Sample
+
+```{r reads-per-sample}
+fc_trans <- data.frame(t(featureCounts_metrics))
+rownames(fc_trans) <- gsub("\\.", "_", rownames(fc_trans))
+fc_trans <- data.frame(fc_trans,
+                        annotData[match(rownames(fc_trans), rownames(annotData)), ])
+fc_trans$mapping_rate <- (fc_trans$Mapped_fragments / fc_trans$Total_fragments) * 100
+fc_trans$rawcounts    <- colSums(assaydata)[match(colnames(assaydata), rownames(fc_trans))]
+
+ggplot(data = fc_trans,
+       aes(x = reorder(Sample_ID, -Total_fragments), y = Total_fragments, fill = Group)) +
+  geom_bar(stat = "identity", width = 0.75) +
+  labs(title = "Total Reads per Sample", y = "Reads", x = "Sample ID") +
+  coord_flip() +
+  theme_bw() +
+  theme(axis.text = element_text(size = 7),
+        axis.title = element_text(size = 10, face = "bold"))
+```
+
+### Mapping Rate
+
+```{r mapping-rate}
+ggplot(fc_trans,
+       aes(reorder(Group, mapping_rate, median, order = TRUE), mapping_rate, fill = Group)) +
+  geom_boxplot() +
+  labs(title = "Mapping Rate by Group", y = "Mapping Rate (%)", x = "Group") +
+  theme_bw()
+```
+
+### Raw Counts
+
+```{r raw-counts}
+ggplot(fc_trans,
+       aes(reorder(Group, rawcounts, median, order = TRUE), rawcounts, fill = Group)) +
+  geom_boxplot() +
+  labs(title = "Raw Counts by Group", y = "Raw Counts", x = "Group") +
+  theme_bw()
+```
+
+## Quality Control {.tabset .tabset-fade .tabset-pills}
+
+### Library Size Distribution
+
+```{r lib-size}
+lib_sizes <- data.frame(
+  Sample_ID = colnames(assaydata),
+  LibSize   = colSums(assaydata)
+)
+lib_sizes <- merge(lib_sizes, annotData, by = "Sample_ID")
+
+ggplot(lib_sizes, aes(x = reorder(Sample_ID, -LibSize), y = LibSize, fill = Group)) +
+  geom_bar(stat = "identity", width = 0.75) +
+  labs(title = "Library Size per Sample", y = "Total Counts", x = "Sample ID") +
+  coord_flip() +
+  theme_bw() +
+  theme(axis.text = element_text(size = 7))
+```
+
+### Detected Genes
+
+```{r detected-genes}
+detected_genes <- data.frame(
+  Sample_ID      = colnames(assaydata),
+  Detected_genes = colSums(assaydata > 0)
+)
+detected_genes <- merge(detected_genes, annotData, by = "Sample_ID")
+
+ggplot(detected_genes,
+       aes(x = reorder(Group, Detected_genes, median, order = TRUE),
+           y = Detected_genes, fill = Group)) +
+  geom_boxplot() +
+  labs(title = "Detected Genes by Group", y = "Number of Detected Genes", x = "Group") +
+  theme_bw()
+```
+
+## ExpressionSet Creation {.tabset}
+
+### Build eSet
+
+```{r eset-creation, eval=FALSE}
+eSet <- Biobase::ExpressionSet(
+  assayData  = as.matrix(assaydata),
+  phenoData  = AnnotatedDataFrame(
+    annotData[match(colnames(assaydata), rownames(annotData)), ]
+  )
+)
+
+saveRDS(eSet, file.path(PATH, "data/eSet_bulk.RDS"))
+message("eSet saved: ", nrow(eSet), " genes x ", ncol(eSet), " samples")
+```
+
+### eSet Summary
+
+```{r eset-summary, eval=FALSE}
+eSet <- readRDS(file.path(PATH, "data/eSet_bulk.RDS"))
+print(eSet)
+table(eSet$Group)
+```
+
+## Session Info
+
+```{r session-info}
+sessionInfo()
+```

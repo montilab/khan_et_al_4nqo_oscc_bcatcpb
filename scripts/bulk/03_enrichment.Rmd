@@ -1,0 +1,215 @@
+---
+title: "4NQO OSCC Bcat - Bulk RNA-seq Pathway Enrichment Analysis"
+author: "M. Muzamil Khan"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    code_folding: hide
+    theme: flatly
+    toc: yes
+    toc_float: true
+  html_notebook:
+    code_folding: hide
+    theme: flatly
+    toc: yes
+    toc_float: true
+  pdf_document:
+    toc: yes
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_knit$set(root.dir = normalizePath("../.."))
+```
+
+```{r libraries, warning=FALSE, message=FALSE}
+library(ggplot2)
+library(dplyr)
+library(DT)
+library(Biobase)
+library(hypeR)
+library(GSVA)
+PATH <- getwd()
+```
+
+## Overview
+
+This document performs overrepresentation analysis (ORA) using hypeR on differentially expressed genes and gene set variation analysis (GSVA) on the full expression matrix. Differential expression results are loaded from `02_diffanalysis.{Rmd, html}`.
+
+Gene set collections used:
+
+- **MSigDB Hallmarks** (H): curated gene sets representing well-defined biological states/processes
+- **MSigDB C2 (KEGG/Reactome)**: curated canonical pathway gene sets
+- **MSigDB C5 (GO)**: Gene Ontology gene sets
+- **Wnt / beta-catenin signatures**: custom signatures for Wnt pathway activity
+
+```{r load-data}
+eSet         <- readRDS(file.path(PATH, "data/eSet_bulk.RDS"))
+res_oscc_ctrl <- readRDS(file.path(PATH, "results/deseq2_4nqo_vs_ctrl.RDS"))
+res_cpb_oscc  <- readRDS(file.path(PATH, "results/deseq2_4nqo_cpb_vs_4nqo.RDS"))
+res_cpb_ctrl  <- readRDS(file.path(PATH, "results/deseq2_4nqo_cpb_vs_ctrl.RDS"))
+```
+
+```{r genesets}
+# Load MSigDB gene sets (mouse via homolog mapping or direct mouse MSigDB)
+msigdb_H  <- msigdb_gsets(species = "Mus musculus", category = "H")
+msigdb_C2 <- msigdb_gsets(species = "Mus musculus", category = "C2",
+                            subcategory = "CP:KEGG")
+msigdb_C5 <- msigdb_gsets(species = "Mus musculus", category = "C5",
+                            subcategory = "GO:BP")
+```
+
+## ORA: 4NQO vs. Control {.tabset .tabset-fade .tabset-pills}
+
+### Hallmarks - Upregulated
+
+```{r ora-oscc-ctrl-H-up}
+hyp_oscc_ctrl_up_H <- hypeR(res_oscc_ctrl$up,
+                               gsets    = msigdb_H,
+                               test     = "hypergeometric",
+                               background = nrow(eSet),
+                               fdr      = 0.05,
+                               quiet    = TRUE)
+hyp_dots(hyp_oscc_ctrl_up_H, title = "4NQO vs. Control (Up) - Hallmarks")
+```
+
+### Hallmarks - Downregulated
+
+```{r ora-oscc-ctrl-H-down}
+hyp_oscc_ctrl_down_H <- hypeR(res_oscc_ctrl$down,
+                                 gsets    = msigdb_H,
+                                 test     = "hypergeometric",
+                                 background = nrow(eSet),
+                                 fdr      = 0.05,
+                                 quiet    = TRUE)
+hyp_dots(hyp_oscc_ctrl_down_H, title = "4NQO vs. Control (Down) - Hallmarks")
+```
+
+### KEGG - Upregulated
+
+```{r ora-oscc-ctrl-C2-up}
+hyp_oscc_ctrl_up_C2 <- hypeR(res_oscc_ctrl$up,
+                               gsets    = msigdb_C2,
+                               test     = "hypergeometric",
+                               background = nrow(eSet),
+                               fdr      = 0.05,
+                               quiet    = TRUE)
+hyp_dots(hyp_oscc_ctrl_up_C2, title = "4NQO vs. Control (Up) - KEGG")
+```
+
+### KEGG - Downregulated
+
+```{r ora-oscc-ctrl-C2-down}
+hyp_oscc_ctrl_down_C2 <- hypeR(res_oscc_ctrl$down,
+                                  gsets    = msigdb_C2,
+                                  test     = "hypergeometric",
+                                  background = nrow(eSet),
+                                  fdr      = 0.05,
+                                  quiet    = TRUE)
+hyp_dots(hyp_oscc_ctrl_down_C2, title = "4NQO vs. Control (Down) - KEGG")
+```
+
+## ORA: 4NQO + CPB vs. 4NQO {.tabset .tabset-fade .tabset-pills}
+
+### Hallmarks - Upregulated
+
+```{r ora-cpb-oscc-H-up}
+hyp_cpb_oscc_up_H <- hypeR(res_cpb_oscc$up,
+                              gsets    = msigdb_H,
+                              test     = "hypergeometric",
+                              background = nrow(eSet),
+                              fdr      = 0.05,
+                              quiet    = TRUE)
+hyp_dots(hyp_cpb_oscc_up_H, title = "4NQO + CPB vs. 4NQO (Up) - Hallmarks")
+```
+
+### Hallmarks - Downregulated
+
+```{r ora-cpb-oscc-H-down}
+hyp_cpb_oscc_down_H <- hypeR(res_cpb_oscc$down,
+                                gsets    = msigdb_H,
+                                test     = "hypergeometric",
+                                background = nrow(eSet),
+                                fdr      = 0.05,
+                                quiet    = TRUE)
+hyp_dots(hyp_cpb_oscc_down_H, title = "4NQO + CPB vs. 4NQO (Down) - Hallmarks")
+```
+
+### KEGG - Upregulated
+
+```{r ora-cpb-oscc-C2-up}
+hyp_cpb_oscc_up_C2 <- hypeR(res_cpb_oscc$up,
+                              gsets    = msigdb_C2,
+                              test     = "hypergeometric",
+                              background = nrow(eSet),
+                              fdr      = 0.05,
+                              quiet    = TRUE)
+hyp_dots(hyp_cpb_oscc_up_C2, title = "4NQO + CPB vs. 4NQO (Up) - KEGG")
+```
+
+## GSVA Enrichment Analysis {.tabset .tabset-fade .tabset-pills}
+
+### Hallmarks GSVA Scores
+
+```{r gsva-H}
+# Build gene set list for GSVA
+gs_list_H <- lapply(msigdb_H$gsets, function(x) x$genes)
+names(gs_list_H) <- names(msigdb_H$gsets)
+
+gsva_scores_H <- gsva(exprs(eSet),
+                       gs_list_H,
+                       method    = "gsva",
+                       kcdf      = "Poisson",
+                       min.sz    = 5,
+                       max.sz    = 500,
+                       verbose   = FALSE)
+
+saveRDS(gsva_scores_H, file.path(PATH, "results/gsva_hallmarks.RDS"))
+```
+
+### GSVA Heatmap
+
+```{r gsva-H-heatmap}
+library(pheatmap)
+annot_col <- data.frame(Group = eSet$Group, row.names = colnames(eSet))
+pheatmap(gsva_scores_H,
+          annotation_col = annot_col,
+          show_rownames  = TRUE,
+          fontsize_row   = 6,
+          color          = colorRampPalette(c("blue", "white", "red"))(100),
+          main           = "GSVA - MSigDB Hallmarks")
+```
+
+### Wnt / Beta-catenin GSVA
+
+```{r gsva-wnt}
+# Custom Wnt/beta-catenin signatures (to be populated with published signatures)
+wnt_sigs <- list(
+  WNT_TARGET_GENES       = c("Axin2", "Lgr5", "Myc", "Ccnd1", "Cd44",
+                               "Tcf7", "Lef1", "Tnfrsf19", "Nkd1", "Sp5"),
+  CTNNB1_TARGETS_UP      = c("Ctnnb1", "Tcf4", "Axin2", "Dkk1", "Fzd1",
+                               "Wnt3", "Wnt5a", "Sox17", "Fosl1", "Jun"),
+  EMT_SIGNATURE          = c("Cdh2", "Vim", "Fn1", "Zeb1", "Zeb2",
+                               "Twist1", "Snai1", "Snai2", "Mmp2", "Mmp9")
+)
+
+gsva_scores_wnt <- gsva(exprs(eSet),
+                          wnt_sigs,
+                          method  = "gsva",
+                          kcdf    = "Poisson",
+                          verbose = FALSE)
+
+annot_col <- data.frame(Group = eSet$Group, row.names = colnames(eSet))
+pheatmap(gsva_scores_wnt,
+          annotation_col = annot_col,
+          color          = colorRampPalette(c("blue", "white", "red"))(100),
+          main           = "GSVA - Wnt/Beta-catenin Signatures")
+
+saveRDS(gsva_scores_wnt, file.path(PATH, "results/gsva_wnt_signatures.RDS"))
+```
+
+## Session Info
+
+```{r session-info}
+sessionInfo()
+```

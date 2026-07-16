@@ -1,0 +1,293 @@
+---
+title: "4NQO OSCC Bcat - Bulk RNA-seq Differential Expression Analysis"
+author: "M. Muzamil Khan"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    code_folding: hide
+    theme: flatly
+    toc: yes
+    toc_float: true
+  html_notebook:
+    code_folding: hide
+    theme: flatly
+    toc: yes
+    toc_float: true
+  pdf_document:
+    toc: yes
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_knit$set(root.dir = normalizePath("../.."))
+```
+
+```{r libraries, warning=FALSE, message=FALSE}
+library(ggplot2)
+library(dplyr)
+library(DT)
+library(Biobase)
+library(DESeq2)
+library(pheatmap)
+library(RColorBrewer)
+library(hypeR)
+PATH <- getwd()
+```
+
+## Overview
+
+This document performs pairwise differential expression analysis using DESeq2 between the experimental groups in the 4NQO OSCC/beta-catenin study. Summary statistics and eSet creation are in `01_summstats_eset.{Rmd, html}`.
+
+Groups compared:
+
+- **4NQO vs. Control**: Effect of 4NQO-induced carcinogenesis
+- **4NQO + CPB vs. 4NQO**: Effect of conditional beta-catenin perturbation in the context of 4NQO-induced OSCC
+- **4NQO + CPB vs. Control**: Combined effect of carcinogenesis and Bcat perturbation
+
+```{r load-eset}
+eSet <- readRDS(file.path(PATH, "data/eSet_bulk.RDS"))
+table(eSet$Group)
+```
+
+```{r helper-functions}
+# Hierarchical clustering with optimal leaf ordering (S. Monti / D. Gusenleitner)
+hcopt <- function(d, HC = NULL, method = "ward", members = NULL) {
+  require("cba")
+  if (is.null(HC)) {
+    HC <- hclust(d, method = method, members = members)
+  }
+  ORD    <- order.optimal(d, merge = HC$merge)
+  HC$merge <- ORD$merge
+  HC$order <- ORD$order
+  HC
+}
+
+run_deseq2 <- function(eset, groups, ref_group, covariates = NULL) {
+  sub_eset <- eset[, which(pData(eset)$Group %in% groups)]
+  col_data <- data.frame(condition = sub_eset$Group, row.names = colnames(sub_eset))
+  if (!is.null(covariates)) {
+    for (cov in covariates) {
+      col_data[[cov]] <- pData(sub_eset)[[cov]]
+    }
+    design_formula <- as.formula(paste("~", paste(c(covariates, "condition"), collapse = " + ")))
+  } else {
+    design_formula <- ~ condition
+  }
+  dds <- DESeqDataSetFromMatrix(countData = exprs(sub_eset),
+                                 colData   = col_data,
+                                 design    = design_formula)
+  dds$condition <- relevel(dds$condition, ref = ref_group)
+  dds_res       <- DESeq(dds)
+  results(dds_res)
+}
+
+plot_volcano <- function(res, title, fdr = 0.05, lfc = 1.5) {
+  df <- as.data.frame(res)
+  df$sig <- ifelse(!is.na(df$padj) & df$padj <= fdr & abs(df$log2FoldChange) >= lfc,
+                   "Significant", "Not significant")
+  ggplot(df, aes(x = log2FoldChange, y = -log10(pvalue), color = sig)) +
+    geom_point(alpha = 0.5, size = 1) +
+    scale_color_manual(values = c("Significant" = "red", "Not significant" = "grey50")) +
+    geom_vline(xintercept = c(-lfc, lfc), linetype = "dashed", color = "blue") +
+    geom_hline(yintercept = -log10(0.05), linetype = "dashed", color = "blue") +
+    labs(title = title, x = "log2 Fold Change", y = "-log10(p-value)", color = "") +
+    theme_bw()
+}
+
+fdr   <- 0.05
+lfc   <- 1.5
+```
+
+## 4NQO vs. Control {.tabset .tabset-fade .tabset-pills}
+
+### DESeq2 Results
+
+```{r oscc-vs-ctrl-deseq2}
+res_oscc_ctrl <- run_deseq2(eSet,
+                              groups    = c("Control", "4NQO"),
+                              ref_group = "Control")
+res_oscc_ctrl <- res_oscc_ctrl[!is.na(res_oscc_ctrl$padj), ]
+summary(res_oscc_ctrl)
+
+cat("\nSignificant DEGs (padj <= 0.05, |LFC| >= 1.5):\n")
+print(c(
+  "Up"   = sum(res_oscc_ctrl$padj <= fdr & res_oscc_ctrl$log2FoldChange >= lfc,  na.rm = TRUE),
+  "Down" = sum(res_oscc_ctrl$padj <= fdr & res_oscc_ctrl$log2FoldChange <= -lfc, na.rm = TRUE)
+))
+```
+
+### Volcano Plot
+
+```{r oscc-vs-ctrl-volcano}
+plot_volcano(res_oscc_ctrl, title = "4NQO vs. Control")
+```
+
+### Top DEGs
+
+```{r oscc-vs-ctrl-top}
+oscc_ctrl_up   <- rownames(res_oscc_ctrl[which(res_oscc_ctrl$padj <= fdr &
+                                                  res_oscc_ctrl$log2FoldChange >= lfc), ])
+oscc_ctrl_down <- rownames(res_oscc_ctrl[which(res_oscc_ctrl$padj <= fdr &
+                                                  res_oscc_ctrl$log2FoldChange <= -lfc), ])
+
+DT::datatable(as.data.frame(res_oscc_ctrl[oscc_ctrl_up, ]),
+               caption = "4NQO vs. Control - Upregulated")
+DT::datatable(as.data.frame(res_oscc_ctrl[oscc_ctrl_down, ]),
+               caption = "4NQO vs. Control - Downregulated")
+```
+
+### Heatmap
+
+```{r oscc-vs-ctrl-heatmap}
+top_genes <- c(oscc_ctrl_up, oscc_ctrl_down)
+sub_eset  <- eSet[, which(eSet$Group %in% c("Control", "4NQO"))]
+heatdata  <- t(scale(t(exprs(sub_eset)[top_genes, ])))
+hc_row    <- hcopt(as.dist(1 - cor(t(heatdata))), method = "ward.D")
+annot_col <- data.frame(Group = pData(sub_eset)$Group,
+                         row.names = colnames(sub_eset))
+pheatmap(heatdata,
+          cluster_rows   = hc_row,
+          show_rownames  = FALSE,
+          annotation_col = annot_col,
+          color          = colorRampPalette(c("blue", "white", "red"))(100),
+          main           = "4NQO vs. Control DEGs")
+```
+
+### Save Results
+
+```{r oscc-vs-ctrl-save, eval=FALSE}
+saveRDS(list(up = oscc_ctrl_up, down = oscc_ctrl_down, full = res_oscc_ctrl),
+         file.path(PATH, "results/deseq2_4nqo_vs_ctrl.RDS"))
+```
+
+## 4NQO + CPB vs. 4NQO {.tabset .tabset-fade .tabset-pills}
+
+### DESeq2 Results
+
+```{r cpb-vs-oscc-deseq2}
+res_cpb_oscc <- run_deseq2(eSet,
+                              groups    = c("4NQO", "4NQO_CPB"),
+                              ref_group = "4NQO")
+res_cpb_oscc <- res_cpb_oscc[!is.na(res_cpb_oscc$padj), ]
+summary(res_cpb_oscc)
+
+cat("\nSignificant DEGs (padj <= 0.05, |LFC| >= 1.5):\n")
+print(c(
+  "Up"   = sum(res_cpb_oscc$padj <= fdr & res_cpb_oscc$log2FoldChange >= lfc,  na.rm = TRUE),
+  "Down" = sum(res_cpb_oscc$padj <= fdr & res_cpb_oscc$log2FoldChange <= -lfc, na.rm = TRUE)
+))
+```
+
+### Volcano Plot
+
+```{r cpb-vs-oscc-volcano}
+plot_volcano(res_cpb_oscc, title = "4NQO + CPB vs. 4NQO")
+```
+
+### Top DEGs
+
+```{r cpb-vs-oscc-top}
+cpb_oscc_up   <- rownames(res_cpb_oscc[which(res_cpb_oscc$padj <= fdr &
+                                                res_cpb_oscc$log2FoldChange >= lfc), ])
+cpb_oscc_down <- rownames(res_cpb_oscc[which(res_cpb_oscc$padj <= fdr &
+                                                res_cpb_oscc$log2FoldChange <= -lfc), ])
+
+DT::datatable(as.data.frame(res_cpb_oscc[cpb_oscc_up, ]),
+               caption = "4NQO + CPB vs. 4NQO - Upregulated")
+DT::datatable(as.data.frame(res_cpb_oscc[cpb_oscc_down, ]),
+               caption = "4NQO + CPB vs. 4NQO - Downregulated")
+```
+
+### Heatmap
+
+```{r cpb-vs-oscc-heatmap}
+top_genes <- c(cpb_oscc_up, cpb_oscc_down)
+sub_eset  <- eSet[, which(eSet$Group %in% c("4NQO", "4NQO_CPB"))]
+heatdata  <- t(scale(t(exprs(sub_eset)[top_genes, ])))
+hc_row    <- hcopt(as.dist(1 - cor(t(heatdata))), method = "ward.D")
+annot_col <- data.frame(Group = pData(sub_eset)$Group,
+                         row.names = colnames(sub_eset))
+pheatmap(heatdata,
+          cluster_rows   = hc_row,
+          show_rownames  = FALSE,
+          annotation_col = annot_col,
+          color          = colorRampPalette(c("blue", "white", "red"))(100),
+          main           = "4NQO + CPB vs. 4NQO DEGs")
+```
+
+### Save Results
+
+```{r cpb-vs-oscc-save, eval=FALSE}
+saveRDS(list(up = cpb_oscc_up, down = cpb_oscc_down, full = res_cpb_oscc),
+         file.path(PATH, "results/deseq2_4nqo_cpb_vs_4nqo.RDS"))
+```
+
+## 4NQO + CPB vs. Control {.tabset .tabset-fade .tabset-pills}
+
+### DESeq2 Results
+
+```{r cpb-vs-ctrl-deseq2}
+res_cpb_ctrl <- run_deseq2(eSet,
+                              groups    = c("Control", "4NQO_CPB"),
+                              ref_group = "Control")
+res_cpb_ctrl <- res_cpb_ctrl[!is.na(res_cpb_ctrl$padj), ]
+summary(res_cpb_ctrl)
+
+cat("\nSignificant DEGs (padj <= 0.05, |LFC| >= 1.5):\n")
+print(c(
+  "Up"   = sum(res_cpb_ctrl$padj <= fdr & res_cpb_ctrl$log2FoldChange >= lfc,  na.rm = TRUE),
+  "Down" = sum(res_cpb_ctrl$padj <= fdr & res_cpb_ctrl$log2FoldChange <= -lfc, na.rm = TRUE)
+))
+```
+
+### Volcano Plot
+
+```{r cpb-vs-ctrl-volcano}
+plot_volcano(res_cpb_ctrl, title = "4NQO + CPB vs. Control")
+```
+
+### Top DEGs
+
+```{r cpb-vs-ctrl-top}
+cpb_ctrl_up   <- rownames(res_cpb_ctrl[which(res_cpb_ctrl$padj <= fdr &
+                                                res_cpb_ctrl$log2FoldChange >= lfc), ])
+cpb_ctrl_down <- rownames(res_cpb_ctrl[which(res_cpb_ctrl$padj <= fdr &
+                                                res_cpb_ctrl$log2FoldChange <= -lfc), ])
+
+DT::datatable(as.data.frame(res_cpb_ctrl[cpb_ctrl_up, ]),
+               caption = "4NQO + CPB vs. Control - Upregulated")
+DT::datatable(as.data.frame(res_cpb_ctrl[cpb_ctrl_down, ]),
+               caption = "4NQO + CPB vs. Control - Downregulated")
+```
+
+### Save Results
+
+```{r cpb-vs-ctrl-save, eval=FALSE}
+saveRDS(list(up = cpb_ctrl_up, down = cpb_ctrl_down, full = res_cpb_ctrl),
+         file.path(PATH, "results/deseq2_4nqo_cpb_vs_ctrl.RDS"))
+```
+
+## DEG Overlap {.tabset}
+
+### Venn Diagram
+
+```{r venn}
+library(VennDiagram)
+venn.diagram(
+  x         = list(
+    `4NQO vs Ctrl (up)`      = oscc_ctrl_up,
+    `CPB vs 4NQO (up)`       = cpb_oscc_up,
+    `CPB vs Ctrl (up)`       = cpb_ctrl_up
+  ),
+  filename  = NULL,
+  fill      = c("steelblue", "tomato", "gold"),
+  alpha     = 0.5,
+  main      = "Overlap of Upregulated DEGs"
+)
+```
+
+## Session Info
+
+```{r session-info}
+sessionInfo()
+```

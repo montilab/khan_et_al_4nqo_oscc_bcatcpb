@@ -1,0 +1,12 @@
+# R artifacts
+.Rhistory
+.RData
+.Rproj.user
+*.Rproj
+
+# macOS
+.DS_Store
+
+# Rendered notebook intermediates (keep .html outputs)
+*_cache/
+*_files/

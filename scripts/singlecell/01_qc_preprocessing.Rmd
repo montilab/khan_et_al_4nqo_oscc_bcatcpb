@@ -1,0 +1,233 @@
+---
+title: "4NQO OSCC Bcat - scRNA-seq QC and Preprocessing"
+author: "M. Muzamil Khan"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    code_folding: hide
+    theme: flatly
+    toc: yes
+    toc_float: true
+  html_notebook:
+    code_folding: hide
+    theme: flatly
+    toc: yes
+    toc_float: true
+  pdf_document:
+    toc: yes
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_knit$set(root.dir = normalizePath("../.."))
+```
+
+```{r libraries, warning=FALSE, message=FALSE}
+library(Seurat)
+library(ggplot2)
+library(dplyr)
+library(DT)
+library(patchwork)
+PATH <- getwd()
+```
+
+## Overview
+
+This document performs quality control and preprocessing of the single-cell RNA-seq data from the 4NQO OSCC / beta-catenin perturbation study. Raw count matrices are loaded from 10x Genomics Cell Ranger output and processed through the Seurat pipeline.
+
+Samples included:
+
+- **Control**: Wild-type mice, no treatment
+- **4NQO**: Wild-type mice, 4NQO-induced OSCC
+- **4NQO_CPB**: 4NQO-treated mice with conditional Ctnnb1 (beta-catenin) knockout
+
+```{r sample-metadata}
+sample_meta <- data.frame(
+  sample_id = c("Control_1", "Control_2",
+                 "4NQO_1",    "4NQO_2",
+                 "4NQO_CPB_1","4NQO_CPB_2"),
+  group     = c("Control",  "Control",
+                 "4NQO",     "4NQO",
+                 "4NQO_CPB", "4NQO_CPB"),
+  path      = file.path(PATH, "data", "cellranger",
+                         c("Control_1", "Control_2",
+                           "4NQO_1",    "4NQO_2",
+                           "4NQO_CPB_1","4NQO_CPB_2"),
+                         "filtered_feature_bc_matrix")
+)
+DT::datatable(sample_meta[, c("sample_id", "group")],
+               caption = "Sample Metadata")
+```
+
+## Load and Merge Seurat Objects {.tabset}
+
+### Load Individual Samples
+
+```{r load-samples}
+seurat_list <- lapply(seq_len(nrow(sample_meta)), function(i) {
+  counts <- Read10X(data.dir = sample_meta$path[i])
+  so     <- CreateSeuratObject(counts      = counts,
+                                project     = sample_meta$sample_id[i],
+                                min.cells   = 3,
+                                min.features = 200)
+  so$sample_id <- sample_meta$sample_id[i]
+  so$group     <- sample_meta$group[i]
+  so
+})
+names(seurat_list) <- sample_meta$sample_id
+```
+
+### Cell Counts per Sample
+
+```{r cell-counts}
+cell_counts <- sapply(seurat_list, ncol)
+DT::datatable(data.frame(Sample = names(cell_counts), Cells = cell_counts),
+               caption = "Cell counts before QC filtering")
+```
+
+## Quality Control {.tabset .tabset-fade .tabset-pills}
+
+### Mitochondrial Percentage
+
+```{r mito-pct}
+seurat_list <- lapply(seurat_list, function(so) {
+  so[["pct_mt"]] <- PercentageFeatureSet(so, pattern = "^mt-")
+  so
+})
+
+# Violin plots per sample
+lapply(seurat_list, function(so) {
+  VlnPlot(so,
+           features = c("nFeature_RNA", "nCount_RNA", "pct_mt"),
+           ncol     = 3,
+           pt.size  = 0) +
+    plot_annotation(title = unique(so$sample_id))
+})
+```
+
+### Feature-Count Scatter
+
+```{r feature-count-scatter}
+lapply(seurat_list, function(so) {
+  p1 <- FeatureScatter(so, feature1 = "nCount_RNA",   feature2 = "pct_mt")
+  p2 <- FeatureScatter(so, feature1 = "nCount_RNA",   feature2 = "nFeature_RNA")
+  p1 + p2
+})
+```
+
+## Filtering {.tabset}
+
+### Apply QC Thresholds
+
+```{r filtering}
+min_features <- 200
+max_features <- 6000
+max_mt       <- 20
+
+seurat_list_filtered <- lapply(seurat_list, function(so) {
+  subset(so,
+          subset = nFeature_RNA >= min_features &
+                   nFeature_RNA <= max_features &
+                   pct_mt       <= max_mt)
+})
+
+cell_counts_after <- sapply(seurat_list_filtered, ncol)
+comparison <- data.frame(
+  Sample  = names(cell_counts),
+  Before  = cell_counts,
+  After   = cell_counts_after,
+  Removed = cell_counts - cell_counts_after
+)
+DT::datatable(comparison, caption = "Cell counts before and after QC filtering")
+```
+
+## Normalization and Feature Selection {.tabset}
+
+### Normalize and Find HVGs
+
+```{r normalize}
+seurat_list_filtered <- lapply(seurat_list_filtered, function(so) {
+  so <- NormalizeData(so, normalization.method = "LogNormalize",
+                       scale.factor = 10000, verbose = FALSE)
+  so <- FindVariableFeatures(so, selection.method = "vst",
+                              nfeatures = 3000,    verbose = FALSE)
+  so
+})
+```
+
+### Top HVGs
+
+```{r hvg-plot}
+top_hvg <- head(VariableFeatures(seurat_list_filtered[[1]]), 20)
+p <- VariableFeaturePlot(seurat_list_filtered[[1]])
+LabelPoints(plot = p, points = top_hvg, repel = TRUE) +
+  labs(title = paste("Top HVGs -", names(seurat_list_filtered)[1]))
+```
+
+## Merge and Scale {.tabset}
+
+### Merge Seurat Objects
+
+```{r merge}
+seurat_merged <- merge(seurat_list_filtered[[1]],
+                        y           = seurat_list_filtered[-1],
+                        add.cell.ids = sample_meta$sample_id,
+                        project     = "4NQO_OSCC_Bcat",
+                        merge.data  = TRUE)
+
+seurat_merged$group <- factor(seurat_merged$group,
+                               levels = c("Control", "4NQO", "4NQO_CPB"))
+print(seurat_merged)
+```
+
+### Scale Data
+
+```{r scale}
+all_genes       <- rownames(seurat_merged)
+seurat_merged   <- ScaleData(seurat_merged, features = all_genes, verbose = FALSE)
+```
+
+## Dimensionality Reduction {.tabset .tabset-fade .tabset-pills}
+
+### PCA
+
+```{r pca}
+seurat_merged <- RunPCA(seurat_merged, features = VariableFeatures(seurat_merged),
+                         npcs = 50, verbose = FALSE)
+ElbowPlot(seurat_merged, ndims = 50) +
+  labs(title = "Elbow Plot - PCA")
+```
+
+### PCA Visualization
+
+```{r pca-viz}
+DimPlot(seurat_merged, reduction = "pca", group.by = "group") +
+  labs(title = "PCA - Colored by Group")
+DimPlot(seurat_merged, reduction = "pca", group.by = "sample_id") +
+  labs(title = "PCA - Colored by Sample")
+```
+
+### UMAP
+
+```{r umap}
+n_pcs           <- 30
+seurat_merged   <- RunUMAP(seurat_merged, dims = 1:n_pcs, verbose = FALSE)
+DimPlot(seurat_merged, reduction = "umap", group.by = "group") +
+  labs(title = "UMAP - Colored by Group")
+DimPlot(seurat_merged, reduction = "umap", group.by = "sample_id") +
+  labs(title = "UMAP - Colored by Sample")
+```
+
+## Save Preprocessed Object {.tabset}
+
+```{r save, eval=FALSE}
+saveRDS(seurat_merged, file.path(PATH, "data/seurat_preprocessed.RDS"))
+message("Saved preprocessed Seurat object: ",
+         ncol(seurat_merged), " cells x ", nrow(seurat_merged), " genes")
+```
+
+## Session Info
+
+```{r session-info}
+sessionInfo()
+```

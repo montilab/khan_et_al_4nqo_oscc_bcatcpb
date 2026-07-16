@@ -1,0 +1,232 @@
+---
+title: "4NQO OSCC Bcat - scRNA-seq Differential Expression Analysis"
+author: "M. Muzamil Khan"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    code_folding: hide
+    theme: flatly
+    toc: yes
+    toc_float: true
+  html_notebook:
+    code_folding: hide
+    theme: flatly
+    toc: yes
+    toc_float: true
+  pdf_document:
+    toc: yes
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_knit$set(root.dir = normalizePath("../.."))
+```
+
+```{r libraries, warning=FALSE, message=FALSE}
+library(Seurat)
+library(ggplot2)
+library(dplyr)
+library(DT)
+library(patchwork)
+library(MAST)
+PATH <- getwd()
+```
+
+## Overview
+
+This document performs differential expression analysis between experimental groups at the single-cell level using MAST, applied within each major cell type. Cell type annotations are described in `02_clustering.{Rmd, html}`.
+
+Comparisons performed per cell type:
+
+- **4NQO vs. Control**
+- **4NQO + CPB vs. 4NQO**
+- **4NQO + CPB vs. Control**
+
+```{r load-data}
+seurat_merged <- readRDS(file.path(PATH, "data/seurat_annotated.RDS"))
+print(seurat_merged)
+table(seurat_merged$group, seurat_merged$cell_type)
+```
+
+```{r helper-functions}
+run_mast <- function(seurat_obj, cell_type_col = "cell_type",
+                      group_col = "group", ident1, ident2,
+                      cell_type = NULL, min_cells = 10) {
+  if (!is.null(cell_type)) {
+    seurat_obj <- subset(seurat_obj, cells = which(seurat_obj[[cell_type_col]][, 1] == cell_type))
+  }
+  cells_g1 <- colnames(seurat_obj)[seurat_obj[[group_col]][, 1] == ident1]
+  cells_g2 <- colnames(seurat_obj)[seurat_obj[[group_col]][, 1] == ident2]
+  if (length(cells_g1) < min_cells || length(cells_g2) < min_cells) {
+    message("Skipping: not enough cells for ", cell_type, " (", ident1, " vs. ", ident2, ")")
+    return(NULL)
+  }
+  sub_obj <- subset(seurat_obj, cells = c(cells_g1, cells_g2))
+  Idents(sub_obj) <- sub_obj[[group_col]][, 1]
+  FindMarkers(sub_obj,
+               ident.1 = ident1, ident.2 = ident2,
+               test.use = "MAST",
+               min.pct  = 0.1,
+               verbose  = FALSE)
+}
+
+cell_types <- levels(seurat_merged$cell_type)
+```
+
+## 4NQO vs. Control - Per Cell Type {.tabset .tabset-fade .tabset-pills}
+
+```{r de-oscc-ctrl, results='asis'}
+de_oscc_ctrl <- list()
+
+for (ct in cell_types) {
+  cat("### ", ct, "\n\n")
+  res <- run_mast(seurat_merged,
+                   ident1    = "4NQO",
+                   ident2    = "Control",
+                   cell_type = ct)
+  if (!is.null(res) && nrow(res) > 0) {
+    res$gene      <- rownames(res)
+    res$cell_type <- ct
+    de_oscc_ctrl[[ct]] <- res
+    sig <- res[res$p_val_adj <= 0.05 & abs(res$avg_log2FC) >= 0.5, ]
+    cat("Significant DEGs (padj <= 0.05, |log2FC| >= 0.5):", nrow(sig), "\n\n")
+    if (nrow(sig) > 0) {
+      print(DT::datatable(sig, caption = paste(ct, "- 4NQO vs. Control")))
+    }
+  } else {
+    cat("No significant DEGs or insufficient cells.\n\n")
+  }
+  cat("\n\n")
+}
+
+de_oscc_ctrl_all <- do.call(rbind, de_oscc_ctrl)
+saveRDS(de_oscc_ctrl_all, file.path(PATH, "results/sc_de_4nqo_vs_ctrl.RDS"))
+```
+
+## 4NQO + CPB vs. 4NQO - Per Cell Type {.tabset .tabset-fade .tabset-pills}
+
+```{r de-cpb-oscc, results='asis'}
+de_cpb_oscc <- list()
+
+for (ct in cell_types) {
+  cat("### ", ct, "\n\n")
+  res <- run_mast(seurat_merged,
+                   ident1    = "4NQO_CPB",
+                   ident2    = "4NQO",
+                   cell_type = ct)
+  if (!is.null(res) && nrow(res) > 0) {
+    res$gene      <- rownames(res)
+    res$cell_type <- ct
+    de_cpb_oscc[[ct]] <- res
+    sig <- res[res$p_val_adj <= 0.05 & abs(res$avg_log2FC) >= 0.5, ]
+    cat("Significant DEGs (padj <= 0.05, |log2FC| >= 0.5):", nrow(sig), "\n\n")
+    if (nrow(sig) > 0) {
+      print(DT::datatable(sig, caption = paste(ct, "- 4NQO + CPB vs. 4NQO")))
+    }
+  } else {
+    cat("No significant DEGs or insufficient cells.\n\n")
+  }
+  cat("\n\n")
+}
+
+de_cpb_oscc_all <- do.call(rbind, de_cpb_oscc)
+saveRDS(de_cpb_oscc_all, file.path(PATH, "results/sc_de_4nqo_cpb_vs_4nqo.RDS"))
+```
+
+## 4NQO + CPB vs. Control - Per Cell Type {.tabset .tabset-fade .tabset-pills}
+
+```{r de-cpb-ctrl, results='asis'}
+de_cpb_ctrl <- list()
+
+for (ct in cell_types) {
+  cat("### ", ct, "\n\n")
+  res <- run_mast(seurat_merged,
+                   ident1    = "4NQO_CPB",
+                   ident2    = "Control",
+                   cell_type = ct)
+  if (!is.null(res) && nrow(res) > 0) {
+    res$gene      <- rownames(res)
+    res$cell_type <- ct
+    de_cpb_ctrl[[ct]] <- res
+    sig <- res[res$p_val_adj <= 0.05 & abs(res$avg_log2FC) >= 0.5, ]
+    cat("Significant DEGs (padj <= 0.05, |log2FC| >= 0.5):", nrow(sig), "\n\n")
+    if (nrow(sig) > 0) {
+      print(DT::datatable(sig, caption = paste(ct, "- 4NQO + CPB vs. Control")))
+    }
+  } else {
+    cat("No significant DEGs or insufficient cells.\n\n")
+  }
+  cat("\n\n")
+}
+
+de_cpb_ctrl_all <- do.call(rbind, de_cpb_ctrl)
+saveRDS(de_cpb_ctrl_all, file.path(PATH, "results/sc_de_4nqo_cpb_vs_ctrl.RDS"))
+```
+
+## Visualization {.tabset .tabset-fade .tabset-pills}
+
+### Top DEGs - Epithelial Cells (4NQO vs. Control)
+
+```{r epi-violin}
+if (!is.null(de_oscc_ctrl[["Epithelial"]])) {
+  top_epi_genes <- de_oscc_ctrl[["Epithelial"]] %>%
+    filter(p_val_adj <= 0.05, avg_log2FC >= 0.5) %>%
+    slice_max(n = 6, order_by = avg_log2FC) %>%
+    pull(gene)
+
+  epi_cells <- subset(seurat_merged, subset = cell_type == "Epithelial")
+  VlnPlot(epi_cells, features = top_epi_genes,
+           group.by = "group", ncol = 3, pt.size = 0) +
+    plot_annotation(title = "Top Upregulated Genes - Epithelial Cells (4NQO vs. Control)")
+}
+```
+
+### Wnt Targets in Epithelial Cells
+
+```{r wnt-epi}
+wnt_targets <- c("Axin2", "Lgr5", "Myc", "Ccnd1", "Ctnnb1", "Cd44")
+epi_cells   <- subset(seurat_merged, subset = cell_type == "Epithelial")
+
+VlnPlot(epi_cells, features = intersect(wnt_targets, rownames(epi_cells)),
+         group.by = "group", ncol = 3, pt.size = 0) +
+  plot_annotation(title = "Wnt Target Gene Expression in Epithelial Cells")
+```
+
+### DEG Summary Across Cell Types
+
+```{r deg-summary}
+summarize_de <- function(de_list, comparison) {
+  do.call(rbind, lapply(names(de_list), function(ct) {
+    res <- de_list[[ct]]
+    sig <- res[res$p_val_adj <= 0.05 & abs(res$avg_log2FC) >= 0.5, ]
+    data.frame(
+      Comparison = comparison,
+      CellType   = ct,
+      N_up       = sum(sig$avg_log2FC > 0),
+      N_down     = sum(sig$avg_log2FC < 0),
+      Total      = nrow(sig)
+    )
+  }))
+}
+
+deg_summary <- rbind(
+  summarize_de(de_oscc_ctrl, "4NQO vs. Control"),
+  summarize_de(de_cpb_oscc,  "4NQO_CPB vs. 4NQO"),
+  summarize_de(de_cpb_ctrl,  "4NQO_CPB vs. Control")
+)
+
+DT::datatable(deg_summary, caption = "DEG Summary Across Cell Types and Comparisons")
+
+ggplot(deg_summary, aes(x = CellType, y = Total, fill = Comparison)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  labs(title = "Number of Significant DEGs per Cell Type",
+       x = "Cell Type", y = "# DEGs (padj <= 0.05, |log2FC| >= 0.5)") +
+  theme_bw() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+## Session Info
+
+```{r session-info}
+sessionInfo()
+```
