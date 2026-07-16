@@ -1,0 +1,379 @@
+---
+title: "Effects of Epithelial Programs ~ Clusters and Treatments"
+author: "M. Muzamil Khan"
+date: "2024-02-29"
+output:
+  html_document:
+    code_folding: hide
+    theme: flatly
+    toc: yes
+    toc_float: true
+  html_notebook:
+    code_folding: hide
+    theme: flatly
+    toc: yes
+    toc_float: true
+  pdf_document:
+    toc: yes
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+.libPaths("/restricted/projectnb/montilab-p/personal/mmkhan/R/4.1/")
+PATH <- "/restricted/projectnb/montilab-p/projects/oralcancer/4nqo/"
+
+library(Seurat)
+library(dplyr)
+library(ggplot2)
+#library(lme4)
+library(emmeans)
+library(gtsummary)
+```
+
+## Load data {.tabset .tabset-fade .tabset-pills}
+
+Load epithelial seurat object
+
+```{r}
+e7386_epi <- readRDS(file = file.path(PATH, "mmkhan_e7386/data/2023_01_09_e7386_epi.rds"))
+```
+
+Load GSVA scores
+
+```{r}
+gsva_res_all <- data.frame(t(readRDS(file = file.path(PATH,"mmkhan_e7386/results/2023_11_20_gsva_nqo_epi_e7386_all_sct.RDS"))))
+```
+
+
+## LME {.tabset .tabset-fade .tabset-pills}
+
+Effect of cell program on each cluster using cells per cluster as a random effect.
+GSVA per cluster for epi. programs(stress etc) ~ seurat_clusters + (1|cell); cell id as a random effect for each fixed cluster and no intercept
+
+```{r}
+.reverselog_trans <- function(base=exp(1)) {
+    trans <- function(x) -log(x, base)
+    inv <- function(x) base^(-x)
+    scales::trans_new(paste0("reverselog-", format(base)), trans, inv, 
+              scales::log_breaks(base=base), 
+              domain=c(1e-100, Inf))
+}
+
+
+lme_wrapper <- function(Y, dat) {
+
+        lmer_fit <- lmerTest::lmer(dat[, Y] ~ 0 + seurat_clusters +  (1|sample), data = dat)
+        return(lmer_fit)
+}
+
+lme_df <- gsva_res_all[,c('Stress', "Epithelial_Differentiation_1", "Epithelial_Differentiation_2", "pEMT", "HALLMARK_EPITHELIAL_MESENCHYMAL_TRANSITION", "Cell_Cycle", "e7386_25.vs.nqo.dn", "e7386_50.vs.nqo.dn"), drop = FALSE]
+lme_df <- dplyr::rename(lme_df, "Diff1"="Epithelial_Differentiation_1", "Diff2"="Epithelial_Differentiation_2", "EMT"="HALLMARK_EPITHELIAL_MESENCHYMAL_TRANSITION", "CC"="Cell_Cycle")
+lme_df$seurat_clusters <- e7386_epi$seurat_clusters[match(colnames(e7386_epi), rownames(lme_df))]
+lme_df$treatment <- e7386_epi$treatment[match(colnames(e7386_epi), rownames(lme_df))]
+lme_df$sample <- e7386_epi$sample[match(colnames(e7386_epi), rownames(lme_df))]
+lme_df$cell_id <- e7386_epi$cell_id[match(colnames(e7386_epi), rownames(lme_df))]
+
+#levels(lme_df$seurat_clusters) <- labels_ordered
+lm1 <- lme_wrapper(Y = "Stress", dat = lme_df)
+lm2 <- lme_wrapper(Y = "Diff1", dat = lme_df)
+lm3 <- lme_wrapper(Y = "Diff2", dat = lme_df)
+lm4 <- lme_wrapper(Y = "pEMT", dat = lme_df)
+lm5 <- lme_wrapper(Y = "EMT", dat = lme_df)
+lm6 <- lme_wrapper(Y = "CC", dat = lme_df)
+
+```
+
+add confidence intervals and q-values
+
+```{r}
+ci_qval <- function(lm_fit) {
+  lm_df <- data.frame(summary(lm_fit)$coefficients)
+  lm_df$qval <- p.adjust(lm_df$Pr...t.., method = "fdr")
+  lm_df <- cbind(lm_df, confint(lm1, level = 0.95)[3:16, ])
+  return(lm_df)
+}
+
+lm1_df <- ci_qval(lm1)
+lm2_df <- ci_qval(lm2)
+lm3_df <- ci_qval(lm3)
+lm4_df <- ci_qval(lm4)
+lm5_df <- ci_qval(lm5)
+lm6_df <- ci_qval(lm6)
+
+lm_dfs_mod <- list(lm1_df, lm2_df, lm3_df, lm4_df, lm5_df, lm6_df)
+#saveRDS(lm_dfs_mod, file.path(PATH, "mmkhan_e7386/results/05_08_lm_df_epi_clusters_wO_int.rds"))
+```
+## Read Dfs
+
+```{r}
+lm_dfs_mod <- readRDS(file.path(PATH, "mmkhan_e7386/results/05_08_lm_df_epi_clusters_wO_int.rds"))
+```
+
+
+## Epi. progs. estimates
+05/08 Fig 3C
+
+```{r}
+lm_dfs_mod[[1]]$group <- rep(nrow(lm_dfs_mod[[1]]), x = "Stress")
+lm_dfs_mod[[1]]$clust <- seq_along(1:14)
+lm_dfs_mod[[1]]$est_mod <- scale(lm_dfs_mod[[1]]$Estimate)
+
+lm_dfs_mod[[2]]$group <- rep(nrow(lm_dfs_mod[[2]]), x = "Diff.1")
+lm_dfs_mod[[2]]$clust <- seq_along(1:14)
+lm_dfs_mod[[2]]$est_mod <- scale(lm_dfs_mod[[2]]$Estimate)
+
+lm_dfs_mod[[3]]$group <- rep(nrow(lm_dfs_mod[[3]]), x = "Diff.2")
+lm_dfs_mod[[3]]$clust <- seq_along(1:14)
+lm_dfs_mod[[3]]$est_mod <- scale(lm_dfs_mod[[3]]$Estimate)
+
+lm_dfs_mod[[4]]$group <- rep(nrow(lm_dfs_mod[[4]]), x = "pEMT")
+lm_dfs_mod[[4]]$clust <- seq_along(1:14)
+lm_dfs_mod[[4]]$est_mod <- scale(lm_dfs_mod[[4]]$Estimate)
+
+lm_dfs_mod[[5]]$group <- rep(nrow(lm_dfs_mod[[5]]), x = "EMT")
+lm_dfs_mod[[5]]$clust <- seq_along(1:14)
+lm_dfs_mod[[5]]$est_mod <- scale(lm_dfs_mod[[5]]$Estimate)
+
+lm_dfs_mod[[6]]$group <- rep(nrow(lm_dfs_mod[[6]]), x = "Cell Cycle")
+lm_dfs_mod[[6]]$clust <- seq_along(1:14)
+lm_dfs_mod[[6]]$est_mod <- scale(lm_dfs_mod[[6]]$Estimate)
+
+lm_df_rb <- rbind(lm_dfs_mod[[1]], lm_dfs_mod[[2]], lm_dfs_mod[[3]], lm_dfs_mod[[4]], lm_dfs_mod[[5]], lm_dfs_mod[[6]])
+lm_df_rb$group <- factor(lm_df_rb$group, levels = c("Stress", "EMT", "pEMT", "Diff.1", "Diff.2", "Cell Cycle"))
+
+
+l <- lm_df_rb %>%
+    ggplot() +
+    geom_point(aes(x=factor(clust), y=group, color=est_mod, size=qval)) +
+    ggplot2::geom_vline(xintercept = 0, color = "red", linetype = "dashed", cex = 1,  alpha = 0.5) +
+    scale_size_continuous(trans = c("log10", "reverse"), name = "qval")+
+    scale_color_gradient2(low = "blue", mid = "white", high = "red3", name= "Estimates")+
+    ggplot2::scale_y_discrete(limits=rev)+
+    
+    theme_bw() +
+    ggplot2::theme(axis.text.x = element_text(angle = 45, hjust = 1, size=15, family = "Arial", face="bold"),
+                   axis.text.y = element_text( size=15, family = "Arial", face="bold"),
+                   axis.title.y = element_text( size=18, family = "Arial"),
+                  axis.title.x = element_text(size=18, family = "Arial"))+
+        xlab("Clusters")+ ylab("Epithelial Programs")
+l 
+
+#ggsave(plot = l, filename = file.path(PATH, "mmkhan_e7386/results/e7386_images/05_08_epi_clust_pgms.png"), width = 10, height = 5, dpi = 300)
+#ggsave(plot = l, filename = file.path(PATH, "mmkhan_e7386/results/e7386_images/07_18_epi_clust_pgms.png"), width = 6.5, height = 3, dpi = 300)
+
+```
+
+## Stress estimates
+
+new fig 3D
+
+```{r ci_plot_wrapper}
+ci_plot_wrapper1 <- function(lm_df, xlab) {
+  
+  df_ci <- data.frame(lm_df, 
+                      cluster=factor(seq_along(1:14)))
+  df_ci <- dplyr::rename(df_ci, "ci_low"="X2.5..", "ci_high"="X97.5..")
+  
+  df_ci$qval_mod <- ifelse(df_ci$qval <= 0.05 & df_ci$qval >= 0.01,"*", 
+                          ifelse(df_ci$qval<=0.01, "***", "NS"))
+  
+  df_ci$label <- paste(round(df_ci$Estimate, 3), df_ci$qval_mod, sep = ",")
+
+  plot1 <-  ggplot2::ggplot(df_ci,  ggplot2::aes(y = cluster, x = Estimate)) +
+   ggplot2::geom_point(shape = 18, size = 5,  ggplot2::aes(x = Estimate, y = cluster, colour = Estimate >0)) +
+   ggplot2::scale_colour_manual(name = 'Estimate > 0', values = setNames(c('red','blue'),c(T, F))) +  
+   ggplot2::geom_errorbarh( ggplot2::aes(xmin = ci_low, xmax = ci_high), height = 0.25) +
+   ggplot2::geom_vline(xintercept = 0, color = "red", linetype = "dashed", cex = 1,  alpha = 0.5) +
+   ggplot2::scale_y_discrete(limits=rev)+
+    ggrepel::geom_label_repel( ggplot2::aes(label=label),position = "identity",
+                       label.size = 0,  
+                       #label.padding=.1, 
+                       #na.rm=TRUE,
+                       fill = ggplot2:: alpha(c("white"),0.5))+
+   ggplot2::xlab(xlab) + 
+   ggplot2::ylab(" ") + 
+   ggplot2::theme_bw() +
+   ggplot2::theme(panel.border =  ggplot2::element_blank(),
+        panel.background =  ggplot2::element_blank(),
+        panel.grid.major =  ggplot2::element_blank(), 
+        panel.grid.minor =  ggplot2::element_blank(), 
+        axis.line =  ggplot2::element_line(colour = "black"),
+        axis.text.y =  ggplot2::element_text(size = 12, colour = "black"),
+        axis.text.x.bottom =  ggplot2::element_text(size = 12, colour = "black"),
+        axis.title.x =  ggplot2::element_text(size = 12, colour = "black"))
+plot1
+}
+
+c <- ci_plot_wrapper1(lm_df = lm_dfs_mod[[1]], xlab = "Stress Estimates")+ NoLegend()
+c
+#ggsave(plot = c, filename = file.path(PATH, "mmkhan_e7386/results/e7386_images/05_10_fig3d_new.png"), width = 5, height = 6.5, dpi = 300)
+```
+
+
+## EMM {.tabset .tabset-fade .tabset-pills}
+
+Raw means doesn't take into account the number of observations in the group, EMM does that! Also, EMM can be applied to complex models such as one with interaction effects.
+
+cluster*trt effect on cell-type abundance by estimated marginal means
+
+```{r}
+library(emmeans)
+df1 <- data.frame(e7386_epi@meta.data[, c('sample', 'treatment', 'seurat_clusters')])
+# count number of cells per sample
+df2 <- df1 %>% 
+  group_by(sample, seurat_clusters, treatment) %>%
+  summarise(number = n())
+
+# add total number of cells per sample
+cells_sample <- df1 %>% 
+  group_by(sample) %>%
+  summarise(totalcells = n())
+
+combdf <- merge(df2, cells_sample, by = 'sample', all = T)
+
+# final_df <- combdf %>%
+#   mutate(proportion = number/totalcells)
+
+final_df <- combdf %>%
+  mutate(Other = totalcells-number)
+
+model0 <- glm(
+  formula = cbind(number, Other) ~ seurat_clusters,
+  family = binomial(link = 'logit'),
+  data = final_df
+)
+
+#simple
+emm0 <- emmeans(model0, specs = ~ seurat_clusters)
+emm0 %>%
+  summary(infer = TRUE, type = 'response') %>%
+  arrange(prob) -> cell_type_probs
+
+final_df %>% pull(number) %>% sum -> N
+final_df %>% 
+  group_by(seurat_clusters) %>% 
+  summarise(fraction = sum(number) / N) %>% 
+  arrange(fraction) %>% 
+  as.data.frame -> cell_type_fractions
+```
+
+### Control vs 4nqo
+
+```{r}
+final_df_ctrl <- final_df %>% filter(treatment %in% c('control','4NQO control'))
+
+formula = as.formula(cbind(number, Other) ~ seurat_clusters * treatment)
+model1 <- glm(formula = formula, family = 'binomial', data = final_df_ctrl)
+
+emm1 <- emmeans(model1, specs = revpairwise ~  treatment | seurat_clusters)
+emm1$contrasts %>%
+  summary(infer = TRUE, type = 'response') %>%
+  #rbind() %>%
+  as.data.frame() -> c_results1
+c_results1
+```
+
+
+```{r}
+df_res <- data.frame(cluster=c_results1$seurat_clusters, 
+                     or=c_results1$odds.ratio, 
+                     lower=c_results1$asymp.LCL, 
+                     upper=c_results1$asymp.UCL, 
+                     p_val=c_results1$p.value)
+df_res$pval_mod <- ifelse(df_res$p_val <= 0.05 & df_res$p_val >= 0.01,"*", 
+                         ifelse(df_res$p_val<=0.01, "***", "NS"))
+df_res$label <- paste(round(df_res$or, 3), df_res$pval_mod, sep = ",")
+
+plot2 <- ggplot(df_res, aes(y = cluster, x = or)) +
+  geom_point(shape = 18, size = 5) +
+  geom_errorbarh(aes(xmin = lower, xmax = upper), height = 0.25) +
+  geom_vline(xintercept = 1, color = "red", linetype = "dashed", cex = 1, alpha = 0.5) +
+  scale_y_discrete(limits=rev)+
+  ggrepel::geom_label_repel(aes(label=label), nudge_x = 0.0, nudge_y = 0.25,
+                       label.size = 0,  
+                       #label.padding=.1, 
+                       #na.rm=TRUE,
+                       fill = alpha(c("white"),0.5))+
+  xlab("Odds Ratio of 4-NQO Control \n vs. Control") + 
+  ylab(" ") + 
+  theme_bw() +
+  theme(panel.border = element_blank(),
+        panel.background = element_blank(),
+        panel.grid.major = element_blank(), 
+        panel.grid.minor = element_blank(), 
+        axis.line = element_line(colour = "black"),
+        axis.text.y = element_text(size = 12, colour = "black"),
+        axis.text.x.bottom = element_text(size = 12, colour = "black"),
+        axis.title.x = element_text(size = 12, colour = "black"))
+plot2
+
+#ggsave(plot = plot2, filename = file.path(PATH, "mmkhan_e7386/results/e7386_images/figs_3f_ctrl.png"), width = 8, height = 8, dpi = 300)
+```
+
+### E7386 vs 4nqo
+
+```{r}
+final_df_non_ctrl <- final_df %>% filter(treatment!="control")
+final_df_non_ctrl$treatment_mod <- recode(final_df_non_ctrl$treatment, '4NQO + E7386; 25 mg/kg' = 'E7386', '4NQO+ E7386; 50 mg/kg'= 'E7386')
+final_df_non_ctrl$treatment_mod <- factor(final_df_non_ctrl$treatment_mod, levels = c("4NQO control", "E7386"))
+final_df_non_ctrl$dose <- factor(ifelse(final_df_non_ctrl$treatment == "4NQO + E7386; 25 mg/kg", 1, 
+                                 ifelse(final_df_non_ctrl$treatment == "4NQO+ E7386; 50 mg/kg", 2, 0)))
+
+formula = as.formula(cbind(number, Other) ~ seurat_clusters * treatment_mod)
+model1 <- glm(formula = formula, family = 'binomial', data = final_df_non_ctrl)
+
+emm1 <- emmeans(model1, specs = revpairwise ~  treatment_mod | seurat_clusters)
+emm1$contrasts %>%
+  summary(infer = TRUE, type = 'response') %>%
+  #rbind() %>%
+  as.data.frame() -> c_results1
+c_results1
+```
+
+```{r}
+df_res <- data.frame(cluster=c_results1$seurat_clusters, 
+                     or=c_results1$odds.ratio, 
+                     lower=c_results1$asymp.LCL, 
+                     upper=c_results1$asymp.UCL, 
+                     p_val=c_results1$p.value)
+df_res$pval_mod <- ifelse(df_res$p_val <= 0.05 & df_res$p_val >= 0.01,"*", 
+                         ifelse(df_res$p_val<=0.01, "***", "NS"))
+df_res$label <- paste(round(df_res$or, 3), df_res$pval_mod, sep = ",")
+
+plot3 <- ggplot(df_res, aes(y = cluster, x = or)) +
+  geom_point(shape = 18, size = 5) +
+  geom_errorbarh(aes(xmin = lower, xmax = upper), height = 0.25) +
+  geom_vline(xintercept = 1, color = "red", linetype = "dashed", cex = 1, alpha = 0.5) +
+  scale_y_discrete(limits=rev)+
+  ggrepel::geom_label_repel(aes(label=label), nudge_x = 0.0, nudge_y = 0.25,
+                       label.size = 0,  
+                       #label.padding=.1, 
+                       #na.rm=TRUE,
+                       fill = alpha(c("white"),0.5))+
+  xlab("Odds Ratio of E7386 (combined) \n vs. 4-NQO Control") + 
+  ylab(" ") + 
+  theme_bw() +
+  theme(panel.border = element_blank(),
+        panel.background = element_blank(),
+        panel.grid.major = element_blank(), 
+        panel.grid.minor = element_blank(), 
+        axis.line = element_line(colour = "black"),
+        axis.text.y = element_text(size = 12, colour = "black"),
+        axis.text.x.bottom = element_text(size = 12, colour = "black"),
+        axis.title.x = element_text(size = 12, colour = "black"))
+plot3
+
+#ggsave(plot = plot2, filename = file.path(PATH, "mmkhan_e7386/results/e7386_images/01_30_clust_or.png"), width = 6, height = 8, dpi = 300)
+```
+
+### Combine all [Fig. 3E,F]
+
+```{r}
+g <- ggpubr::ggarrange(c, plot2, plot3, ncol = 3, nrow = 1, align = "h")
+g
+#ggsave(plot = g, filename = file.path(PATH, "mmkhan_e7386/results/e7386_images/08_01_figs_3def.png"), width = 12.5, height = 8, dpi = 300)
+```
+

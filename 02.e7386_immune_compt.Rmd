@@ -1,0 +1,1483 @@
+---
+title: "E7386 Immune Compt"
+author: "M. Muzamil Khan"
+date: '2023-01-13'
+output:
+  html_document:
+    code_folding: hide
+    theme: flatly
+    toc: yes
+    toc_float: true
+  html_notebook:
+    code_folding: hide
+    theme: flatly
+    toc: yes
+    toc_float: true
+  pdf_document:
+    toc: yes
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+#.libPaths("/restricted/projectnb/montilab-p/personal/mmkhan/R/4.1/")
+PATH <- "/restricted/projectnb/montilab-p/projects/oralcancer/4nqo"
+FIGURES <- '/restricted/projectnb/montilab-p/projects/oralcancer/4nqo/results/bsanjana_figures'
+
+library(Seurat)
+library(ggplot2)
+library(dplyr)
+library(parallel)
+library(K2Taxonomer)
+library(Biobase)
+library(ComplexHeatmap)
+library(ggrastr)
+
+```
+
+# Analysis of e7386-related samples for immune compartment
+
+If you want to access results from following analysis please refer to `01.e7386_general_analysis.{Rmd.html}`.
+1. Creating seurat object from relevant samples.
+2. Norm, clustering and dimensionality reduction.
+3. singleR cell-type annotation 
+4. cluster and trt group level differential and pathway analysis.
+
+This file contains analysis in the immune compartment from samples - ctrl, 4nqo-ctrl, e7386@{25,50} mg/kg with two replicates each. In brief:
+1. recluster immune compartment, quantify and find significant cell-types between trt groups
+2. annotate cell-types and validate/sub-classify immune sub-types
+3. split into adaptive and innate immune system
+4. quantify and find significant cell-types between trt groups across coarser/main types
+4.1 if significant, find differences between trt groups
+
+
+## Immune compartment 
+
+```{r eval=F}
+e7386_obj <- readRDS(file.path(PATH, "mmkhan_e7386/data/2023_01_09_e7386_seurat_filtered_main_final.rds"))
+`%ni%` <- Negate(`%in%`)
+e7386_obj_sub <- subset(e7386_obj, singleRcelltype %ni% c(NA, 'Basophils', 'Microglia'))
+e7386_obj_sub$fcm_cell_type <- factor(e7386_obj_sub$fcm_cell_type)
+```
+
+
+### Recluster
+
+```{r eval=FALSE}
+e7386_imm <- PercentageFeatureSet(e7386_obj_sub, pattern = "^MT-", col.name = "percent.mt")
+e7386_imm <- NormalizeData(e7386_imm, normalization.method = "LogNormalize", scale.factor = 10000)
+e7386_imm <- FindVariableFeatures(e7386_imm, selection.method = "vst", nfeatures = 5000)
+all.genes <- rownames(e7386_imm)
+e7386_imm <- ScaleData(e7386_imm, all.genes)
+#e7386_obj <- RunPCA(e7386_obj, features = VariableFeatures(object = e7386_obj), verbose = FALSE)
+
+```
+
+Explained PC variance
+
+```{r eval=FALSE}
+e7386_imm <- SCTransform(e7386_imm, vars.to.regress = "percent.mt", verbose = FALSE)
+e7386_imm <- RunPCA(e7386_imm, verbose = FALSE)
+
+ElbowPlot(e7386_imm, reduction = "pca")
+
+mat <- Seurat::GetAssayData(e7386_imm, assay = "RNA", slot = "scale.data")
+pca <- e7386_imm[["pca"]]
+
+# Get the total variance:
+total_variance <- sum(matrixStats::rowVars(mat))
+
+eigValues = (pca@stdev)^2  ## EigenValues
+varExplained = eigValues / total_variance
+varExplained
+sum(varExplained)
+sum(varExplained[1:15])
+
+```
+
+```{r eval=FALSE}
+e7386_imm <- RunUMAP(e7386_imm, dims = 1:15, verbose = FALSE)
+
+e7386_imm <- FindNeighbors(e7386_imm, dims = 1:15, verbose = FALSE)
+e7386_imm <- FindClusters(e7386_imm, verbose = FALSE, resolution = 0.4, random.seed = 1234, algorithm = "leiden")
+e7386_imm$cell_id <- rownames(e7386_imm@meta.data)
+
+saveRDS(e7386_imm, file = file.path(PATH, "mmkhan_e7386/data/2023_01_13_e7386_imm.rds"))
+```
+
+## Load object
+
+```{r}
+e7386_imm <- readRDS(file.path(PATH, "mmkhan_e7386/data/2023_01_13_e7386_imm.rds"))
+```
+
+```{r eval=FALSE}
+#to export - NOTE: only the raw counts were exported to BT due to some issue with SCT normalised counts
+rBCS::ExportSeurat(
+  object = e7386_imm,
+  bcs.path = file.path(PATH,"mmkhan_e7386/data/2023_06_13_e7386_imm_BT.bcs"),
+  batch.name = "treatment",
+  unique.limit = 200,
+  raw.rna = "RNA", # Assay that has raw count of RNA
+  norm.rna = "RNA", # Assay that has normalized count of RNA  
+  overwrite = TRUE # Overwrite existing bcs file
+)
+```
+
+```{r}
+pdf(file = file.path(FIGURES, 'supS4a_imm_UMAP.pdf'))
+d <- DimPlot(e7386_imm, label = TRUE, group.by = "seurat_clusters", label.box = TRUE) +
+  NoLegend() +
+  ggtitle(NULL)
+rasterize(d, layers = 'Point', dpi = 500)
+dev.off()
+```
+
+```{r}
+pdf(file = file.path(FIGURES, 'supS4a_imm_UMAP_1.5x.pdf'))
+d <- DimPlot(e7386_imm, label = TRUE, group.by = "seurat_clusters", label.box = TRUE, label.size = 6) +
+  NoLegend() +
+  ggtitle(NULL) +
+  FontSize(
+    x.text = 18,
+    y.text = 18,
+    x.title = 18,
+    y.title = 18,
+    main = NULL
+)
+rasterize(d, layers = 'Point', dpi = 500)
+dev.off()
+```
+
+```{r}
+pdf(file = file.path(FIGURES, 'supS4a_imm_UMAP_2x.pdf'))
+d <- DimPlot(e7386_imm, label = TRUE, group.by = "seurat_clusters", label.box = TRUE, label.size = 8) +
+  NoLegend() +
+  ggtitle(NULL) +
+  FontSize(
+    x.text = 24,
+    y.text = 24,
+    x.title = 24,
+    y.title = 24,
+    main = NULL
+)
+rasterize(d, layers = 'Point', dpi = 500)
+dev.off()
+```
+
+
+```{r}
+#ggsave(plot = d, filename = file.path(PATH, "mmkhan_e7386/results/e7386_images/11_03_imm_umap_seurat_recluster_seurat_clusters.png"), width = 5, height = 5, dpi = 300)
+
+
+d3 <- DimPlot(e7386_imm, label = F, split.by = "treatment")
+d3
+#ggsave(plot = d3, filename = file.path(PATH, "mmkhan_e7386/results/e7386_images/01_13_imm_umap_split_finer.png"), width = 12, height = 5, dpi = 300)
+
+pdf(file = file.path(FIGURES, 'supS4b_imm_singleR_UMAP.pdf'))
+d3 <- DimPlot(e7386_imm, label = T, group.by = "singleRcelltype") +
+  NoLegend() + 
+  ggtitle(NULL) +
+  theme(
+    axis.title.x = element_text(size = 14, family = "Arial"),
+    axis.title.y = element_text(size = 14, family = "Arial"),
+    axis.text.x  = element_text(size = 12, family = "Arial"),
+    axis.text.y  = element_text(size = 12, family = "Arial")
+  )
+rasterize(d3, layers = 'Point', dpi = 500)
+dev.off()
+#ggsave(plot = d3, filename = file.path(PATH, "mmkhan_e7386/results/e7386_images/11_03_imm_umap_seurat_recluster_singleRcelltype.png"), width = 7.5, height = 5, dpi = 300)
+```
+
+## Quantify
+
+### Boxplot # of cells
+
+```{r}
+df <- data.frame(table(e7386_imm$treatment))
+colnames(df) <- c("Treatment", "Number")
+
+g <- ggplot(df, aes_string(x = "Treatment", y = "Number")) +
+  geom_bar(stat = "identity") +
+  #geom_text(aes(label=Number), vjust=1.6, color="white", size=3.5) +
+  geom_label(aes(label=Number), fontface = "bold")
+g
+#ggsave(plot = g, filename = file.path(PATH, "mmkhan_e7386/results/e7386_images/imm_barplot.png"), width = 3, height = 2, dpi = 300)
+```
+
+
+
+```{r relative_proportion_wrapper}
+rel_prop <- function(obj, cond1, cond2, cols=NULL) {
+  meta_data <- obj@meta.data
+  dat <- as.data.frame(prop.table(table(meta_data[,cond1], meta_data[,cond2]), margin = 1))
+  colnames(dat) <- c(cond1, cond2, "percent")
+  
+  dat <- dat %>% 
+  group_by_at(cond1) %>% 
+  mutate(cluster_label_y = 1 - (cumsum(percent) - 0.5 * percent)) %>% 
+  ungroup()
+  
+  d1 <- ggplot(dat, aes_string(cond1, y = "percent", fill = cond2)) +
+  geom_col(position = "fill", stat = "identity", width = 0.5) +
+  scale_y_continuous(labels = scales::percent) +
+  geom_text(aes(y = cluster_label_y, label = round(100 * percent, 2)), col="black", fontface="bold", size=2)+
+  theme_bw() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1, margin=ggplot2::margin(5, b=10)), text = element_text(family = "Arial"))
+  
+ # d1 <- ggplot(dat, aes(treatment, y = percent, fill = cell_type)) +
+ #  #geom_bar(stat = "identity") +
+ #  geom_col(position="fill", width=0.5)+
+ #  #theme(aspect.ratio = 3)+
+ #  scale_fill_manual(values = c("tomato", "pink",  "green3", "turquoise3", "black", "peru"))+
+ #  scale_y_continuous(labels = scales::percent) +
+ #  geom_text(aes(y = cluster_label_y, label = round(100 * percent, 2)), size=2, col="black")+ 
+ #  theme_bw() +   ggplot2::theme(axis.text.x = ggplot2::element_text(angle = 45, hjust = 1))
+
+  if(!is.null(cols)){ 
+    d <- d1 +  scale_fill_manual(values = cols)
+  } else {
+    d <- d1
+  }
+  d
+}
+
+```
+
+
+```{r}
+rel_prop(obj = e7386_imm, cond1 = "treatment", cond2 = "seurat_clusters")
+rel_prop(obj = e7386_imm, cond2 = "treatment", cond1 = "seurat_clusters")
+rel_prop(obj = e7386_imm, cond2 = "imm_group", cond1 = "treatment")
+
+r1 <- rel_prop(obj = e7386_imm, cond1 = "treatment", cond2 = "singleRcelltype")
+r1
+#ggsave(plot = r1, file.path(PATH, "mmkhan_e7386/results/e7386_images/10_23_imm_prop.png"), width = 4, height = 5, dpi = 300)
+rel_prop(obj = e7386_imm, cond1 = "seurat_clusters", cond2 = "singleRcelltype")
+```
+
+```{r}
+rel_prop_boxplot <- function(obj, cond1, cond2) {
+  meta_data <- obj@meta.data
+  dat <- as.data.frame(prop.table(table(meta_data[,cond1], meta_data[,cond2]), margin = 1))
+  colnames(dat) <- c(cond1, cond2, "number")
+  #dat$number <- dat$number/sum(dat$number)
+  dat$treatment <- meta_data$treatment[match(dat$sample, meta_data$Sample_ID)]
+  # dat <- dat %>% 
+  # group_by_at(cond1) %>% 
+  # mutate(cluster_label_y = 1 - (cumsum(percent) - 0.5 * percent)) %>% 
+  # ungroup()
+
+d1 <- ggplot(dat, aes_string(x = cond2, y = "number", fill = "treatment")) +
+  geom_boxplot() +
+  theme_bw() +
+  scale_fill_manual(values = c("gray", "red","salmon", "lightpink"))+
+  theme(axis.text.x = element_text(angle = 45, hjust = 1, margin=ggplot2::margin(5, b=10)), legend.position = "bottom")
+  
+d1
+}
+```
+
+```{r}
+r1 <- rel_prop_boxplot(obj = e7386_imm, cond2 = "singleRcelltype", cond1 = "sample")
+r1 
+#ggsave(plot = r1, filename = file.path(PATH, "mmkhan_e7386/results/e7386_images/relprop_box_imm.png"), width = 6, height = 5, dpi = 300)
+```
+
+
+## GSVA on new imm sigs
+
+```{r eval=F}
+enr_custom <- readxl::read_excel(path = file.path("/restricted/projectnb/montilab-p/CBMrepositoryData/otherStudies/scRNAseq/lung/2022_08_04_SherrD_SnyderM_10X_0223_CD45+_complete/processed_data/ciber_imm_sigs_mouse_final list for sorting.xlsx"), sheet = 2, range = readxl::cell_rows(1:57))
+enr_tcells <- enr_custom
+
+enr_res <- apply(enr_tcells, 2, function(x) toupper(x))
+list_enr <- apply(enr_res, 2, function(x) list(x))
+list_enr$X <- NULL
+#remove NAs
+list_enr_new <- lapply(list_enr, function(x) unique(x[[1]])[!is.na(unique(x[[1]]))])
+
+gsva_imm <- GSVA::gsva(expr = e7386_imm@assays$SCT@data, gset.idx.list = list_enr_new)
+gsva_imm <- as.data.frame(t(gsva_imm))
+
+gsva_imm$seurat_clusters <- e7386_imm$seurat_clusters[match(colnames(e7386_imm), rownames(gsva_imm))]
+#saveRDS(gsva_imm, file = file.path(PATH, "mmkhan_e7386/results/01_13_gsva_imm_cibersort.rds"))
+```
+
+```{r}
+gsva_imm <- readRDS(file = file.path(PATH, "mmkhan_e7386/results/01_13_gsva_imm_cibersort.rds"))
+gsva_imm <- as.data.frame(t(gsva_imm))
+gsva_imm <- gsva_imm[match(colnames(e7386_imm), rownames(gsva_imm)),]
+gsva_imm$seurat_clusters <- e7386_imm$seurat_clusters[match(colnames(e7386_imm), rownames(gsva_imm))]
+
+gsvaResT <- gsva_imm
+condition <- "seurat_clusters"
+cond <- as.list(gsvaResT[, condition ,drop = FALSE])
+gsvaResT[, paste(condition, collapse = "_")] <- cond
+gsvaResFlat <- reshape2::melt(gsvaResT, id.vars = paste(condition,
+                                                          collapse = "_"),
+                                variable.name = "pathway")
+
+gsva_mean <- gsvaResFlat %>% group_by(seurat_clusters, pathway)  %>%
+    dplyr::summarize(Mean = mean(value, na.rm=TRUE))
+
+transformed_mat <- xtabs(Mean~., gsva_mean)
+attr(transformed_mat, "class") <- NULL #ignore this
+
+transformed_mat <- scale(transformed_mat)
+
+cluster_anno <- levels(gsva_mean$seurat_clusters)
+
+col_fun = circlize::colorRamp2(c(-4, 0, 4), c("green", "white", "red"))
+
+#png(filename = file.path(PATH, "results/gsva_custom.png"), height = 500, width = 700)
+ComplexHeatmap::Heatmap(as.matrix(t(transformed_mat)), name = "Mean GSVA Scores",
+        column_split = factor(cluster_anno), col = col_fun,
+        cluster_columns = T,
+        show_column_dend = FALSE,
+        cluster_column_slices = TRUE,
+        column_title_gp = grid::gpar(fontsize = 12),
+        column_gap = ggplot2::unit(0.5, "mm"),
+        cluster_rows = T,
+        show_row_dend = FALSE,
+        #col = col_fun,
+        row_names_gp = grid::gpar(fontsize = 12),
+        column_title_rot = 90,
+        #top_annotation = HeatmapAnnotation(group=clust),
+        show_column_names = FALSE,
+        use_raster = TRUE,
+        raster_quality = 4)
+#dev.off()
+```
+
+
+```{r ftest_wrapper}
+ftest_imm <- function(obj, samples, cond1, cond2){
+  df1 <- obj@meta.data
+  df1 <- df1[df1$treatment %in% samples,]
+  df1$treatment <- factor(df1$treatment, levels = samples)
+  tmp <- table(df1[,cond1], df1[,cond2])
+  df2 <- data.frame(tmp[,1], tmp[,2])
+  colnames(df2) <- colnames(tmp)
+  df2 <- df2 %>%
+    dplyr::mutate(pval=sapply(
+    rownames(df2), function(z) fisher.test(table(df1[,cond1]==z,df1[,cond2]))$p.value)) %>%
+      dplyr::mutate(qval=p.adjust(pval, method = "BH")) %>%
+      dplyr::mutate(sig=ifelse(qval<=0.01, "***",  ifelse(qval <= 0.05, "*", ""))) %>%
+      dplyr::arrange(pval)
+  df2
+
+}
+
+#Fisher's test 
+ftest <- fisher.test(table(e7386_imm$singleRcelltype, e7386_imm$treatment), simulate.p.value = T)
+ftest
+```
+
+### Fishers test
+
+Immune group
+
+```{r}
+ftest_imm(samples = c("control", "4NQO control"), obj = e7386_imm, cond1 = "singleRcelltype", cond2 = "treatment")
+
+ftest_imm(samples = c("4NQO control", "4NQO + E7386; 25 mg/kg"), obj = e7386_imm, cond1 = "singleRcelltype", cond2 = "treatment")
+ftest_imm(samples = c("4NQO control", "4NQO+ E7386; 50 mg/kg"), obj = e7386_imm, cond1 = "singleRcelltype", cond2 = "treatment")
+
+ftest_imm(samples = c("4NQO + E7386; 25 mg/kg", "4NQO+ E7386; 50 mg/kg"),  obj = e7386_imm, cond1 = "singleRcelltype", cond2 = "treatment")
+```
+
+```{r}
+table(e7386_imm$singleRcelltype, e7386_imm$seurat_clusters)
+```
+
+
+Seurat clusters ~ treatment
+
+```{r}
+ftest_imm(samples = c("control", "4NQO control"), obj = e7386_imm, cond1 = "seurat_clusters", cond2 = "treatment")
+ftest_imm(samples = c("control", "4NQO + E7386; 25 mg/kg"), obj = e7386_imm, cond1 = "seurat_clusters", cond2 = "treatment")
+ftest_imm(samples = c("control", "4NQO+ E7386; 50 mg/kg"), obj = e7386_imm, cond1 = "seurat_clusters", cond2 = "treatment")
+
+ftest_imm(samples = c("4NQO control", "4NQO + E7386; 25 mg/kg"), obj = e7386_imm, cond1 = "seurat_clusters", cond2 = "treatment")
+ftest_imm(samples = c("4NQO control", "4NQO+ E7386; 50 mg/kg"), obj = e7386_imm, cond1 = "seurat_clusters", cond2 = "treatment")
+
+ftest_imm(samples = c("4NQO + E7386; 25 mg/kg", "4NQO+ E7386; 50 mg/kg"),  obj = e7386_imm, cond1 = "seurat_clusters", cond2 = "treatment")
+```
+
+SingleRcelltype ~ trt
+
+```{r}
+ftest_imm(samples = c("control", "4NQO control"), obj = e7386_imm, cond1 = "singleRcelltype", cond2 = "treatment")
+ftest_imm(samples = c("control", "4NQO + E7386; 25 mg/kg"), obj = e7386_imm, cond1 = "singleRcelltype", cond2 = "treatment")
+ftest_imm(samples = c("control", "4NQO+ E7386; 50 mg/kg"), obj = e7386_imm, cond1 = "singleRcelltype", cond2 = "treatment")
+
+ftest_imm(samples = c("4NQO control", "4NQO + E7386; 25 mg/kg"), obj = e7386_imm, cond1 = "singleRcelltype", cond2 = "treatment")
+ftest_imm(samples = c("4NQO control", "4NQO+ E7386; 50 mg/kg"), obj = e7386_imm, cond1 = "singleRcelltype", cond2 = "treatment")
+
+ftest_imm(samples = c("4NQO + E7386; 25 mg/kg", "4NQO+ E7386; 50 mg/kg"),  obj = e7386_imm, cond1 = "singleRcelltype", cond2 = "treatment")
+```
+
+
+## Table Summary
+
+```{r}
+library(gtsummary)
+library(gt)
+library(webshot)
+dat_tab1 <- e7386_imm@meta.data[, c('imm_group', 'treatment')]
+#dat_tab1 <- dat_tab1 %>% mutate(`Sample_ID` = factor(`Sample_ID`, levels =c("KM_BM_0318_1C", "KM_BM_0319_1", "KM_BM_0318_5NC", "KM_BM_0319_5")))
+tbl_summary_2 <- tbl_summary(dat_tab1, by = treatment, percent = "column")
+
+gt2 <- tbl_summary_2  %>%  as_gt()   # convert to gt table
+
+# gt2 %>% tab_options(column_labels.font.size=12) %>% gt::gtsave(# save table as image
+#     filename = file.path(PATH, "mmkhan_e7386/results/e7386_images/clust_imm_coarse_tab.png"),
+#   ) 
+# 
+# webshot("../results/e7386_images/clust_imm_coarse_tab.png", "../results/e7386_images/clust_imm_coarse_tab_adj.png", vwidth  = 1000, vheight = 500)
+
+dat_tab1 <- e7386_imm@meta.data[, c('imm_group', 'treatment')]
+#dat_tab1 <- dat_tab1 %>% mutate(`Sample_ID` = factor(`Sample_ID`, levels =c("KM_BM_0318_1C", "KM_BM_0319_1", "KM_BM_0318_5NC", "KM_BM_0319_5")))
+tbl_summary_2 <- tbl_summary(dat_tab1, by = imm_group, percent = "column")
+
+gt2 <- tbl_summary_2  %>%  as_gt()   # convert to gt table
+
+# gt2 %>% tab_options(column_labels.font.size=12) %>% gt::gtsave(# save table as image
+#     filename = "../results/4nqo_e7386_images/clust_imm_coarse_tab_group.png",
+#   ) 
+# 
+# webshot("../results/4nqo_e7386_images/clust_imm_coarse_tab_group.png", "../results/4nqo_e7386_images/clust_imm_coarse_tab_group_adj.png", vwidth  = 1000, vheight = 500)
+
+dat_tab1 <- e7386_imm@meta.data[, c('treatment', 'singleRcelltype')]
+#dat_tab1 <- dat_tab1 %>% mutate(`Sample_ID` = factor(`Sample_ID`, levels =c("KM_BM_0318_1C", "KM_BM_0319_1", "KM_BM_0318_5NC", "KM_BM_0319_5")))
+tbl_summary_2 <- tbl_summary(dat_tab1, by = treatment, percent = "column")
+
+gt2 <- tbl_summary_2  %>%  as_gt()   # convert to gt table
+
+# gt2 %>% tab_options(column_labels.font.size=11) %>% gt::gtsave(# save table as image
+#     filename = "../results/4nqo_e7386_images/trt_singleR_imm_cell_type.png",
+#   ) 
+# 
+# webshot("../results/4nqo_e7386_images/trt_singleR_imm_cell_type.png", "../results/4nqo_e7386_images/trt_singleR_imm_cell_type_adj.png", vwidth  = 1000, vheight = 500)
+
+```
+
+## SingleR using ImmGen
+
+```{r eval=F}
+#immgen ref sce
+ig <- SingleR::ImmGenData()
+rownames(ig) <- toupper(rownames(ig))
+labels <- ig$label.main
+
+#e7386 imm
+singler_imm <- as.SingleCellExperiment(e7386_imm)
+logcounts <- LogNormalize(assay(singler_imm))
+assay(singler_imm, "logcounts") <- logcounts
+assay(singler_imm, "counts") <- NULL
+
+predicted <- SingleR(test = singler_imm, ref = ig, assay.type.test = 1,labels = labels)
+e7386_imm$singleRident <- predicted$labels[match(e7386_imm$cell_id, rownames(predicted))]
+e7386_imm$singleRcelltype <- predicted$pruned.labels[match(e7386_imm$cell_id, rownames(predicted))]
+
+table(e7386_imm$singleRcelltype, useNA="ifany")
+DimPlot(e7386_imm, reduction = "umap", group.by = "singleRcelltype")
+DimPlot(e7386_imm, reduction = "umap", group.by = "singleRcelltype", split.by = "treatment")
+
+e7386_imm <- subset(e7386_imm, singleRcelltype %ni% c("Endothelial cells", "Eosinophils", "Epithelial cells", "Fibroblasts",  "Stem cells", "Stromal cells", "Microglia", NA))
+e7386_imm$imm_group <- ifelse(e7386_imm$singleRcelltype %in% c('B cells', 'B cells, pro', 'T cells', 'Tgd'), "Adaptive", "Innate")
+#saveRDS(e7386_imm, file = file.path(PATH, "mmkhan_e7386/data/2023_01_13_e7386_imm.rds"))
+```
+
+## FCM
+
+```{r eval=F}
+clusters <- levels(e7386_imm$seurat_clusters)
+famRes_imm <- do.call(bind_rows, mclapply(clusters, function(clust) {
+
+  clRes <- FindConservedMarkers(e7386_imm,
+                                ident.1 = clust,
+                                grouping.var = "sample",
+                                assay = "SCT",
+                                meta.method = metap::maximump,
+                                test.use = "MAST",
+                                logfc.threshold = 0.25,
+                                min.cells.group = 5,
+                                only.pos = TRUE,
+                                verbose = FALSE)
+
+  if(nrow(clRes) > 0) {
+    clRes <- data.frame(cluster = clust, gene = rownames(clRes), clRes)
+  } else {
+    clRes <- NULL
+  }
+
+  return(clRes)
+
+}, mc.cores = 6))
+
+rownames(famRes_imm) <- NULL
+
+# Fix column names
+colnames(famRes_imm) <- sub("minimump_", "maximump_", colnames(famRes_imm))
+
+# Fix false discovery rate
+famRes_imm$maximump_fdr <- p.adjust(famRes_imm$maximump_p_val, method = "BH")
+
+# Get minimum logFC
+famRes_imm$maximump_logFC <- apply(famRes_imm[, grepl("avg_log2FC", colnames(famRes_imm))],  1, min, na.rm = TRUE)
+
+# Sort columns
+firstCols <- c(1, 2,
+  grep("maximump_", colnames(famRes_imm)),
+  grep("max_pval", colnames(famRes_imm)))
+lastCols <- seq(ncol(famRes_imm))[!seq(ncol(famRes_imm)) %in% firstCols]
+famRes_mod_imm <- famRes_imm[, c(firstCols, lastCols)]
+
+famRes_mod_imm
+write.csv(famRes_mod_imm, file.path(PATH, "mmkhan_e7386/results/01_13_fcm_e7386_imm.csv"))
+```
+
+## Innate
+
+Recluster
+
+```{r eval=F}
+e7386_imm_inn <- subset(e7386_imm, imm_group == "Innate")
+
+e7386_imm_inn <- PercentageFeatureSet(e7386_imm_inn, pattern = "^MT-", col.name = "percent.mt")
+e7386_imm_inn <- NormalizeData(e7386_imm_inn, normalization.method = "LogNormalize", scale.factor = 10000)
+e7386_imm_inn <- FindVariableFeatures(e7386_imm_inn, selection.method = "vst", nfeatures = 5000)
+all.genes <- rownames(e7386_imm_inn)
+e7386_imm_inn <- ScaleData(e7386_imm_inn, all.genes)
+#e7386_obj <- RunPCA(e7386_obj, features = VariableFeatures(object = e7386_obj), verbose = FALSE)
+
+
+# run sctransform
+e7386_imm_inn <- SCTransform(e7386_imm_inn, vars.to.regress = "percent.mt", verbose = FALSE)
+e7386_imm_inn <- RunPCA(e7386_imm_inn, verbose = FALSE)
+ElbowPlot(e7386_imm_inn)
+
+e7386_imm_inn <- RunUMAP(e7386_imm_inn, dims = 1:15, verbose = FALSE)
+
+e7386_imm_inn <- FindNeighbors(e7386_imm_inn, dims = 1:15, verbose = FALSE)
+e7386_imm_inn <- FindClusters(e7386_imm_inn, verbose = FALSE, resolution = 0.4, random.seed = 5678, algorithm = "leiden")
+
+#saveRDS(e7386_imm_inn, file = file.path(PATH, "mmkhan_e7386/data/2023_01_30_e7386_imm_inn.RDS"))
+
+```
+
+```{r}
+e7386_imm_inn <- readRDS(file.path(PATH, "mmkhan_e7386/data/2023_01_30_e7386_imm_inn.RDS"))
+d <- DimPlot(e7386_imm_inn, label = TRUE) + NoLegend()
+d
+#ggsave(plot = d, filename = file.path(PATH, "mmkhan_e7386/results/e7386_images/imm_inn_umap_seurat_recluster.png"), width = 5, height = 5, dpi = 300)
+
+DimPlot(e7386_imm_inn, label = TRUE) + NoLegend()
+DimPlot(e7386_imm_inn, label = TRUE, group.by = "singleRcelltype")
+d3 <- DimPlot(e7386_imm_inn, label = F, group.by = "singleRcelltype", split.by = "treatment", label.size = 2.5)
+d3
+#ggsave(plot = d3, filename = file.path(PATH, "mmkhan_e7386/results/e7386_images/imm_innate_umap_split_finer.png"), width = 13, height = 5, dpi = 300)
+```
+
+```{r}
+rel_prop(obj = e7386_imm_inn, cond1 = "seurat_clusters", cond2 = "singleRcelltype")
+```
+
+```{r}
+ge_boxplot <- function(genes, obj, cond, ncol, lev, title){
+  df <- data.frame(t(as.matrix(obj@assays$RNA@scale.data[c(genes),])))
+  condition <- cond
+  #cond <- apply(obj[, cond, drop = FALSE], 1, paste, collapse = "_")
+  df[, paste(cond)] <-  apply(obj@meta.data[, cond, drop = FALSE],1, paste, collapse = "_")
+  df[, paste(cond)] <- factor(df[, paste(cond)])
+
+  gsvaResFlat <- reshape2::melt(df, id.vars = paste(cond, collapse = "_"), variable.name = "group")
+  gsvaResFlat[, paste(cond)] <- factor(gsvaResFlat[, paste(cond)], levels = lev)
+  
+  g1 <- ggplot2::ggplot(gsvaResFlat, ggplot2::aes_string(
+    x = paste(condition, collapse = "_"), y = "value",
+    color = paste(condition, collapse = "_"))) +
+    geom_violin()+
+    ggplot2::geom_boxplot(outlier.shape = NA) +
+    #ggplot2::geom_jitter(size=0.0) +
+    ggplot2::facet_wrap(~group, scale = "free_y",
+                        ncol = ncol) +
+    #ggpubr::stat_compare_means(method = "anova",  label = 'p.format')+
+    ggplot2::theme(strip.text.x = ggplot2::element_text(size = 10))+
+    ggplot2::theme(axis.text.x = element_text(angle = 45, hjust = 1))+
+    labs(title = title, y = "Scaled Counts", x = cond)+
+    theme(axis.text = element_text(size = 10), axis.title = element_text(size = 10, face = "bold"))
+  g1
+}
+```
+
+## K2T Analysis
+
+11/29
+
+```{r}
+K2res <- readRDS(file.path(PATH, "mmkhan_e7386/results/2023_11_29_k2res_e7386_imm_sct_scaledata_F_k2tax_full.RDS"))
+dendro <- K2dendro(K2res)
+ggdendro::ggdendrogram(dendro) + theme(axis.text.x = element_text(size = 20))
+
+#K2dashboard(K2res, analysis_name = "12_02_4nqo_e7386_imm")
+```
+
+```{r}
+library(dendextend)
+labels_colors(dend = dendro) <- c("#00B4F0", "#00B4F0", "#00B4F0", "#00B4F0", "#00B4F0", "#00B4F0", "#00BA38", "#B79F00", "#00BA38", "#00BFC4", "#00BFC4", "#F8766D",  "#FF64B0", "#FF64B0")
+
+d1=color_branches(dendro,  k = 7, col = c("#00B4F0", "#00B4F0", "#00B4F0", "#00B4F0", "#B79F00", "#00BFC4", "#FF64B0")) %>% set("branches_lwd", 4)  %>% set("labels_cex", 3)
+plot(d1)
+```
+
+```{r eval=F}
+png(filename = file.path(PATH, "mmkhan_e7386/results/e7386_images/12_04_k2t_dendro_imm.png"),
+    width     = 6,
+    height    = 3.5,
+    units     = "in",
+    res       = 200,
+    pointsize = 6)
+plot(d1)
+dev.off()
+```
+
+innate only
+
+```{r}
+library(K2Taxonomer)
+K2res <- readRDS(file.path(PATH, "mmkhan_e7386/results/09_21_k2res_e7386_imm_inn_clusters_sct_scaledata_F_k2tax_Full.RDS"))
+dendro <- K2dendro(K2res)
+ggdendro::ggdendrogram(dendro) + theme(axis.text.x = element_text(size = 20))
+
+
+library(dendextend)
+
+d1=color_branches(dendro,  k=4, col = c("darkgreen","blue","red","black"), groupLabels = c("ILC/NK-T/Mono./DC", "Early Neutro.", "Late Neutro", "DC/Macro"))
+plot(d1)
+
+#K2Taxonomer::K2dashboard(K2res)
+```
+
+
+Heatmap on early vs. late GE in neutro clusters
+
+```{r}
+earlyneurotime <- toupper(c("Lyz2", "Retnlg", "Lgals3", "Mmp8", "Ly6g"))
+lateneurotime <- toupper(c("Il1b", "Ccl6", "H2-D1", "Dusp1", "Junb", "Ifitm1", "Fxyd5", "Ifitm2", "Malat1", "Btg1", "Jund", "Srgn", "Csf3r"))
+
+neutro_sub <- subset(e7386_imm, seurat_clusters %in% c(1,3,6,9,11,14) & treatment != "control")
+neutro_sub$seurat_clusters <- factor(neutro_sub$seurat_clusters, levels = c(1,3,6,9,11,14))
+neutro_sub$treatment <- factor(neutro_sub$treatment, levels = c("4NQO control", "4NQO + E7386; 25 mg/kg", "4NQO+ E7386; 50 mg/kg"))
+table(neutro_sub$treatment, neutro_sub$seurat_clusters)
+
+DoHeatmap(object = neutro_sub, features = c(earlyneurotime, lateneurotime), group.by = "treatment", group.bar = T, )
+DotPlot(object = neutro_sub, features = c(earlyneurotime, lateneurotime), group.by = "seurat_clusters")+ ggplot2::theme(axis.text.x = ggplot2::element_text(angle = 45, hjust = 1, size = 8))
+```
+
+```{r}
+mat <- as.matrix(neutro_sub@assays$SCT@data[c(earlyneurotime, lateneurotime), ])
+```
+
+```{r pdata.annotation}
+annot <- neutro_sub@meta.data %>% 
+  dplyr::select(cell_id, treatment, seurat_clusters)  
+```
+
+### Heatmap {.tabset .tabset-fade .tabset-pills}
+
+```{r ComplexHeatmap}
+hm_annot <- ComplexHeatmap::HeatmapAnnotation(
+  Treatment = factor(ifelse(annot$treatment == "4NQO control", "4NQO control", "4NQO + E7386"), levels = c("4NQO control", "4NQO + E7386")),
+  Cluster = annot$seurat_clusters,
+  col = list(Treatment = c("4NQO control" = "red",
+                       "4NQO + E7386" = "lightpink"),
+             Cluster = c("1"="white",
+                         "3"= "red",
+                         "6"="black",
+                         "9"= "gray",
+                         "11"= "brown",
+                         "14"= "maroon")
+  ))
+  
+neutro_sub$treatment <-  factor(ifelse(neutro_sub$treatment == "4NQO control", "4NQO control", "4NQO + E7386"), levels = c("4NQO control", "4NQO + E7386"))
+rel_prop(obj = neutro_sub, cond1 = "seurat_clusters", cond2 = "treatment")
+```
+
+
+```{r}
+hcopt <- function(d, HC=NULL, method = "ward", members = NULL){
+  require("cba")
+  if ( is.null(HC) ) {
+    HC <- hclust(d,method=method,members=members)
+  }
+  #optimal leaf ordering
+  ORD <- order.optimal(d,merge=HC$merge)
+  HC$merge <- ORD$merge
+  HC$order <- ORD$order
+  HC
+}
+
+
+```
+
+![Heatmap](/restricted/projectnb/montilab-p/projects/oralcancer/4nqo/mmkhan_e7386/results/e7386_images/10_30_neutro_heatmap.png)
+
+
+
+```{r eval=F}
+mat_mod <- t(scale(t(mat)))
+rownames(mat_mod) <- stringr::str_to_title(rownames(mat_mod))
+
+png(filename = file.path(PATH, "mmkhan_e7386/results/e7386_images/10_30_neutro_heatmap.png"),  
+    width     = 7,
+    height    = 5,
+    units     = "in",
+    res       = 300,
+    pointsize = 8)
+ComplexHeatmap::Heatmap(mat_mod,
+        name="Gene\nExpression",
+        top_annotation=hm_annot, 
+        cluster_rows=F,
+        row_dend_reorder = F,
+        cluster_columns=T,
+        clustering_distance_columns="euclidean",
+        clustering_method_columns="ward.D", 
+        column_split=annot$seurat_clusters,
+        show_parent_dend_line=TRUE,
+        row_title="",
+        row_split = rep(c("Early", "Late"),c(5,13)),
+        show_column_names=F,
+        show_row_names=T)
+dev.off()
+
+
+hc.row <- hcopt(as.dist(1-cor((mat_mod))), method="ward.D")
+
+
+ComplexHeatmap::Heatmap(mat_mod,
+        name="Gene\nExpression",
+        top_annotation=hm_annot, 
+        cluster_rows=F,
+        row_dend_reorder = F,
+        cluster_columns=T,cluster_column_slices = T,
+        clustering_distance_columns="euclidean",
+        clustering_method_columns="ward.D", 
+        column_split=annot$seurat_clusters,
+        show_parent_dend_line=TRUE,
+        row_title="",
+        row_split = rep(c("Early", "Late"),c(5,13)),
+        show_column_names=F,
+        show_row_names=T)
+```
+
+### Confusion Matrix
+
+```{r}
+neutro_mye <- e7386_imm_inn@meta.data[(e7386_imm_inn$seurat_clusters %in% c(10,5,8,9,1,3) & e7386_imm_inn$singleRcelltype=="Neutrophils"), c('cell_id', 'seurat_clusters'), drop=F]
+
+neutro_all <- e7386_imm@meta.data[(e7386_imm$seurat_clusters %in% c(1,3,11,9,6,14) & e7386_imm$singleRcelltype=="Neutrophils"), c('cell_id', 'seurat_clusters'), drop=F]
+names(neutro_all) <- paste("all_", names(neutro_mye), sep = "")
+
+
+neutro_all$mye_seurat_clusters <- neutro_mye[neutro_mye$cell_id %in% neutro_all$all_cell_id, 'seurat_clusters']
+
+table(neutro_all$all_seurat_clusters, neutro_all$mye_seurat_clusters)
+
+table(neutro_all[neutro_all$all_seurat_clusters %in% c(1), 'all_cell_id'] %in% neutro_mye[neutro_mye$seurat_clusters %in% c(1,3,9), 'cell_id'])
+table(neutro_all[neutro_all$all_seurat_clusters %in% c(1), 'all_cell_id'] %in% neutro_mye[neutro_mye$seurat_clusters %in% c(10,5,8), 'cell_id'])
+```
+
+
+Stacked barplot for comparisons in the K2T dendro
+
+```{r}
+e7386_imm$k2class <- ifelse(e7386_imm$seurat_clusters %in% c(13,5,1,8), "Adaptive", 
+                            ifelse(e7386_imm$seurat_clusters %in% c(10,12,2,7,4), "APCs", "Neutrophils"))
+
+rel_prop(e7386_imm, cond2 = "treatment", cond1 = "k2class")
+
+# New line plot for rel. prop
+imm_cells <- data.frame(prop.table(table(e7386_imm$k2class, e7386_imm$treatment), margin = 1))
+imm_cells$Var1 <- factor(imm_cells$Var1)
+imm_cells$Var2 <- factor(imm_cells$Var2)
+colnames(imm_cells) <- c("Sub-type", "Treatment", "Rel. Prop")
+g <- ggplot(data=imm_cells, aes(x=Treatment, y=`Rel. Prop`, group=`Sub-type`, color=`Sub-type`)) +
+  scale_color_manual(values = c("#F564E3", "#B79F00", "#00B4F0"))+
+  geom_line(size =1)+
+  geom_point(size =3) +
+  theme_bw() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1, margin=ggplot2::margin(5, b=10)), 
+        axis.text.x.bottom = element_text(size=8), axis.text.y.left = element_text(size=10, face = "bold")) + NoLegend()
+g
+
+g <- ggplot(data=imm_cells, aes(x=`Sub-type`, y=`Rel. Prop`, group=Treatment, color=Treatment)) +
+  scale_color_manual(values = c("gray", "red", "salmon", "lightpink"))+
+  scale_y_continuous(labels = scales::percent) +
+  geom_line(size =1)+
+  geom_point(size =3) +
+  theme_bw() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1, margin=ggplot2::margin(5, b=10)), 
+        axis.text.x.bottom = element_text(size=8), axis.text.y.left = element_text(size=7, face = "bold")) + NoLegend()
+g
+
+
+#ggsave(plot = g, filename = file.path(PATH, "mmkhan_e7386/results/e7386_images/11_06_imm_relprop_sub.png"), width = 4, height = 2, dpi = 300)
+```   
+
+```{r eval=F}
+K2res_imm <- readRDS(file.path(PATH, "mmkhan_e7386/results/2023_11_29_k2res_e7386_imm_sct_scaledata_F_k2tax_full.RDS"))
+
+gsva_res_imm <- K2Taxonomer::K2gSet(K2res_imm)
+```
+
+## Neutrophils (Final)
+
+### Recluster
+
+```{r eval=F}
+neut <- subset(e7386_imm_inn,  singleRcelltype == "Neutrophils")
+
+neut <- PercentageFeatureSet(neut, pattern = "^MT-", col.name = "percent.mt")
+neut <- NormalizeData(neut, normalization.method = "LogNormalize", scale.factor = 10000)
+neut <- FindVariableFeatures(neut, selection.method = "vst", nfeatures = 5000)
+all.genes <- rownames(neut)
+neut <- ScaleData(neut, all.genes)
+#e7386_obj <- RunPCA(e7386_obj, features = VariableFeatures(object = e7386_obj), verbose = FALSE)
+
+
+# run sctransform
+neut <- SCTransform(neut, vars.to.regress = "percent.mt", verbose = FALSE)
+neut <- RunPCA(neut, verbose = FALSE)
+ElbowPlot(neut)
+
+neut <- RunUMAP(neut, dims = 1:3, verbose = FALSE)
+
+neut <- FindNeighbors(neut, dims = 1:3, verbose = FALSE)
+neut <- FindClusters(neut, verbose = FALSE, resolution = 0.4, random.seed = 5678, algorithm = "leiden")
+
+DimPlot(neut)
+
+saveRDS(neut, file.path(PATH, "mmkhan_e7386/data/06_01_4nqo_e7386_neutro_seurat.rds"))
+```
+
+
+### Early vs. Late neurotime 
+
+#### GSVA
+
+
+```{r eval=F}
+earlyneurotime <- toupper(c("Lyz2", "Retnlg", "Lgals3", "Mmp8", "Ly6g"))
+lateneurotime <- toupper(c("Il1b", "Ccl6", "H2-D1", "Dusp1", "Junb", "Ifitm1", "Fxyd5", "Ifitm2", "Malat1", "Btg1", "Jund", "Srgn", "Csf3r"))
+
+e7386_imm_inn_neut <- subset(e7386_imm_inn, seurat_clusters %in% c())
+genesets <- list(early=earlyneurotime, late=lateneurotime)
+cpm_counts <- neut@assays$RNA@data
+gsva_res <- GSVA::gsva(cpm_counts, genesets, parallel.sz=4, mx.diff=F)
+gsva_res_mod <- data.frame(t(gsva_res))
+#saveRDS(gsva_res_mod, file = file.path(PATH,"mmkhan_e7386/results/07_02_4nqo_e7386_gsva_neuro_mx-F.RDS"))
+#saveRDS(gsva_res_mod, file = file.path(PATH,"mmkhan_e7386/results/06_01_4nqo_e7386_gsva_neuro.RDS"))
+```
+
+### Boxplot
+
+```{r}
+neut <- readRDS(file.path(PATH, "mmkhan_e7386/data/06_01_4nqo_e7386_neutro_seurat.rds"))
+gsva_res_mod <- readRDS(file = file.path(PATH,"mmkhan_e7386/results/06_01_4nqo_e7386_gsva_neuro.RDS"))
+
+gsva_res_mod$treatment <- neut$treatment[match(colnames(neut), rownames(gsva_res_mod))]
+gsva_res_mod <- gsva_res_mod[gsva_res_mod$treatment != "control", ]
+
+gsvaResT <- gsva_res_mod
+condition <- "treatment"
+cond <- as.list(gsvaResT[, condition ,drop = FALSE])
+gsvaResT[, paste(condition, collapse = "_")] <- cond
+gsvaResFlat <- reshape2::melt(gsvaResT, id.vars = paste(condition,
+                                                          collapse = "_"),
+                                variable.name = "pathway")
+g1 <-  ggplot2::ggplot(gsvaResFlat, ggplot2::aes_string(
+    x = "treatment", y = "value",
+   fill="treatment")) +
+    ggplot2::geom_boxplot(outlier.shape = NA) +
+    #ggpubr::stat_compare_means(method = "anova",  label = 'p.format', vjust = 0.75)+
+    ggplot2::theme_bw()+
+    ggplot2::scale_fill_manual(values=c("red","salmon", "lightpink"))+
+    ggplot2::facet_wrap(~pathway, scales = "free_y", ncol = 5 ) +
+    ggplot2::theme(strip.text.x = ggplot2::element_text(size = 10))+
+    ggplot2::theme(axis.text.x = ggplot2::element_text(angle = 45, hjust = 1, size = 8))+
+   geom_hline(yintercept=0, linetype="dashed", color = "red")+
+   ggplot2::theme(legend.position="none")+
+    ggplot2::ylab("GSVA Score")
+g1
+
+#ggsave(plot = g1, filename = file.path(PATH, "mmkhan_e7386/results/e7386_images/07_02_gsva_neut.png"), width = 5, height = 5, dpi = 300)
+```
+### Jonckhree Test
+
+```{r}
+library(PMCMRplus)
+gsva_res_mod$treatment <- factor(gsva_res_mod$treatment, levels = c("4NQO control", "4NQO + E7386; 25 mg/kg", "4NQO+ E7386; 50 mg/kg"))
+PMCMRplus::jonckheereTest(x = gsva_res_mod$late, gsva_res_mod$treatment, "less") # reduces upon treatment
+PMCMRplus::jonckheereTest(x = gsva_res_mod$early, gsva_res_mod$treatment, "greater") # increases upon treatment
+PMCMRplus::jonckheereTest(x = gsva_res_mod$early, gsva_res_mod$treatment, "two.sided")
+PMCMRplus::jonckheereTest(x = gsva_res_mod$late, gsva_res_mod$treatment, "two.sided")
+```
+
+### PointRange plot
+
+```{r}
+ggplot2::ggplot(gsva_res_mod, ggplot2::aes_string(
+    x = "treatment", y = "early",
+   fill="treatment")) +
+
+ geom_pointrange(stat = "summary",
+                  fun.ymin = min,
+                  fun.ymax = max,
+                  fun.y = "median", size = 1)
+
+  ggplot2::ggplot(gsva_res_mod, ggplot2::aes_string(
+    x = "treatment", y = "late",
+   fill="treatment")) +
+ geom_pointrange(stat = "summary",
+                  fun.ymin = min,
+                  fun.ymax = max,
+                  fun.y = "median", size = 1)
+  
+  
+# on a melted df  
+g <- ggplot2::ggplot(gsvaResFlat, ggplot2::aes_string(
+    x = "treatment", y = "value",
+    fill="pathway", color="pathway")) +
+  geom_pointrange(stat = "summary", fun.ymin = min,
+                  fun.ymax = max,
+                  fun.y = "median", size = 1) +
+   geom_hline(yintercept=0, linetype="dashed", color = "red") +
+   ggplot2::theme_bw() +
+   ggplot2::scale_fill_manual(values=c("#00BFF0", "turquoise4")) +
+   ggplot2::scale_color_manual(values=c("#00BFF0", "turquoise4")) +
+   ggplot2::theme(strip.text.x = ggplot2::element_text(size = 10)) +
+   ggplot2::theme(axis.text.x = ggplot2::element_text(angle = 45, hjust = 1, size = 8)) +
+  # ggplot2::theme(legend.position="none") +
+   ggplot2::ylab("GSVA Score")
+g
+#ggsave(plot = g, filename = file.path(PATH, "mmkhan_e7386/results/e7386_images/10_30_gsva_neutro_ptrange.png"), width = 5, height = 5, dpi = 300)
+
+```
+
+### Heatmap
+
+```{r}
+gsva_res <- readRDS(file.path(PATH,"mmkhan_e7386/results/06_01_4nqo_e7386_gsva_neuro.RDS"))
+#gsva_res <- readRDS(file.path(PATH,"mmkhan_e7386/results/09_29_gsva_inn_imm_neuro.RDS"))
+gsva_res <- data.frame((gsva_res))
+#gsva_res <- gsva_epi[,c("Cell_Cycle", "pEMT", "Epithelial_Differentiation_1", "Epithelial_Differentiation_2", "Stress", "Hypoxia",  "CSC_Curated")]
+gsva_res$seurat_clusters <- e7386_imm_inn$seurat_clusters[match(gsub(x = rownames(gsva_res), pattern = "\\.", replacement = "-"), colnames(e7386_imm_inn))]
+
+#heatmap on only clusters that are neutrophil labeled
+gsva_res <- gsva_res[gsva_res$seurat_clusters %in% c(1,3,5,8,10),]
+gsva_res$seurat_clusters <- factor(gsva_res$seurat_clusters)
+gsvaResT <- gsva_res
+condition <- "seurat_clusters"
+cond <- as.list(gsvaResT[, condition ,drop = FALSE])
+gsvaResT[, paste(condition, collapse = "_")] <- cond
+gsvaResFlat <- reshape2::melt(gsvaResT, id.vars = paste(condition,
+                                                          collapse = "_"),
+                                variable.name = "pathway")
+
+gsva_mean <- gsvaResFlat %>% group_by(seurat_clusters, pathway)  %>%
+    dplyr::summarize(Mean = mean(value, na.rm=TRUE))
+
+transformed_mat <- xtabs(Mean~., gsva_mean)
+attr(transformed_mat, "class") <- NULL #ignore this
+
+transformed_mat <- scale(transformed_mat)
+
+cluster_anno <- levels(gsva_mean$seurat_clusters)
+
+ComplexHeatmap::Heatmap(as.matrix(t(transformed_mat)), name = "Mean GSVA scores",  
+        column_split = factor(cluster_anno),
+        cluster_columns = T,
+        show_column_dend = FALSE,
+        cluster_column_slices = TRUE,
+        column_title_gp = grid::gpar(fontsize = 12),
+        column_gap = ggplot2::unit(0.5, "mm"),
+        cluster_rows = F,
+        show_row_dend = FALSE,
+        #col = col_fun,
+        row_names_gp = grid::gpar(fontsize = 12),
+        column_title_rot = 90,
+        top_annotation = HeatmapAnnotation(foo = anno_block(gp = gpar(fill = scales::hue_pal()(9)))),
+        show_column_names = FALSE,
+        use_raster = TRUE,
+        raster_quality = 4)
+```
+
+
+```{r eval=F}
+#### Quantify
+neutro_pop <- subset(e7386_imm_inn, seurat_clusters %in% c(1,3,5,8,10))
+unique(neutro_pop$seurat_clusters)
+neutro_pop$seurat_clusters <- factor(neutro_pop$seurat_clusters, levels=unique(neutro_pop$seurat_clusters))
+
+neutro_pop$neutro_type <- ifelse(neutro_pop$seurat_clusters %in% c(5,8), "early", ifelse(neutro_pop$seurat_clusters %in% c(1,3), "late", "neutro"))
+
+n1 <- DimPlot(neutro_pop, reduction = "umap", group.by = "neutro_type", split.by = "treatment")
+n1
+#ggsave(plot = n1, filename = file.path(PATH, "mmkhan_e7386/results/e7386_images/neutro_split.png"), width = 13, height = 4, dpi = 300)
+
+#cluster ~ treatment
+dat <- as.data.frame(prop.table(table(neutro_pop$seurat_clusters, neutro_pop$treatment), margin = 1))
+colnames(dat) <- c("cluster", "treatment", "percent")
+dat <- dat %>%
+   dplyr::group_by(cluster) %>%
+   dplyr::mutate(cluster_label_y = 1 - (cumsum(percent) - 0.5 * percent)) %>%
+  dplyr::ungroup()
+
+dat$cluster <- factor(dat$cluster)
+g2 <- ggplot(dat, aes(reorder(cluster), y = percent, fill = treatment, group=treatment)) +
+  geom_bar(position = "fill", stat = "identity", width = 0.3) +
+  scale_y_continuous(labels = scales::percent) +
+  geom_text(aes(y = cluster_label_y, label = round(100 * percent, 2)), col="black", fontface="bold", size=2) +
+  xlab("cluster") + theme_bw()
+g2
+
+#treatment ~ neutrotype
+dat <- as.data.frame(prop.table(table(neutro_pop$treatment, neutro_pop$neutro_type), margin = 1))
+colnames(dat) <- c("treatment", "type", "percent")
+dat <- dat %>% 
+   dplyr::group_by(treatment) %>% 
+   dplyr::mutate(cluster_label_y = 1 - (cumsum(percent) - 0.5 * percent)) %>% 
+  dplyr::ungroup()
+
+dat$treatment <- factor(dat$treatment)
+g2 <- ggplot(dat, aes(treatment, y = percent, fill = type, group=type)) +
+   #geom_line(aes(line_type=cluster_label_y))+
+  geom_bar(position = "fill", stat = "identity", width = 0.3) +
+  scale_fill_manual(values = c("lightblue", "salmon", "blue"))+
+  scale_y_continuous(labels = scales::percent) +
+  geom_text(aes(y = cluster_label_y, label = round(100 * percent, 2)), col="white", fontface="bold", size=3) +theme_bw() +  ggplot2::theme(axis.text.x = ggplot2::element_text(angle = 45, hjust = 1, size = 8))
+g2
+
+ftest_neutro <- function(samples){
+  df1 <- neutro_pop@meta.data
+  df1 <- df1[df1$treatment %in% samples,]
+  df1$treatment <- factor(df1$treatment, levels = samples)
+  tmp <- table(df1$neutro_type, df1$treatment)
+  df2 <- data.frame(tmp[,1], tmp[,2])
+  colnames(df2) <- colnames(tmp)
+  df2 <- df2 %>%
+    dplyr::mutate(pval=sapply(
+    rownames(df2), function(z) fisher.test(table(df1$neutro_type==z, df1$treatment))$p.value)) %>%
+      dplyr::mutate(qval=p.adjust(pval, method = "BH")) %>%
+      dplyr::mutate(sig=ifelse(qval<=0.01, "***",  ifelse(qval <= 0.05, "*", ""))) %>%
+      dplyr::arrange(pval)
+  df2
+
+}
+ftest_neutro(samples = c("control", "4NQO control"))
+ftest_neutro(samples = c("4NQO control", "4NQO + E7386; 25 mg/kg"))
+ftest_neutro(samples = c("4NQO control", "4NQO+ E7386; 50 mg/kg"))
+ftest_neutro(samples = c("4NQO + E7386; 25 mg/kg", "4NQO+ E7386; 50 mg/kg"))
+```
+
+#### Diffanal between neutro types ~ trt
+
+```{r eval=F}
+neut$neutro_type <- ifelse(neut$seurat_clusters %in% c(5,8), "early", ifelse(neut$seurat_clusters %in% c(1,3), "late", "neutro"))
+
+Idents(neut) <- neut$neutro_type
+neutro_diffanal <- FindAllMarkers(object = neut, test.use ="MAST", assay = "SCT", slot = "data")
+neutro_diffanal$gene <-  stringr::str_to_title(neutro_diffanal$gene)
+
+diff_genes <- neutro_diffanal %>% 
+  group_by(cluster) %>%
+  filter(avg_log2FC > 1 & p_val_adj <= 0.05) %>%
+  dplyr::select(gene) 
+
+diff_genes
+
+diff_list <- as.list(unstack(rev(diff_genes)))
+#names(diff_list) <- paste("group", names(diff_list))
+
+library(hypeR)
+
+HALLMARK <-  msigdb_gsets("Mus musculus", "H", "")
+names(HALLMARK$genesets) <- names(HALLMARK$genesets) %>%  strsplit( "HALLMARK_" ) %>% sapply( tail, 1 )
+lmultihyp1 <- hypeR(diff_list, HALLMARK, background = nrow(neut@assays$SCT@data))
+h1 <- hyp_dots(hyp_obj = lmultihyp1, fdr=0.05, top = 50, merge = TRUE, title = "Hallmark Enrichment", )
+h1
+#ggsave(plot = h1, filename = file.path(PATH, "results/ctrl_4nqo_ctrl_images/hyper_all.png"), width = 9, height = 5)
+
+REACTOME <- msigdb_gsets(species="Mus musculus", category="C2", subcategory="CP:REACTOME")
+names(REACTOME$genesets) <- names(REACTOME$genesets) %>% strsplit( "REACTOME_" ) %>% sapply( tail, 1 )
+lmultihyp2 <- hypeR(diff_list, REACTOME, background = nrow(neut@assays$SCT@data))
+h2 <- hyp_dots(hyp_obj = lmultihyp2, fdr=0.05, top = 30, merge = TRUE, title = "Reactome Enrichment", )
+h2
+
+GO <- msigdb_gsets(species="Mus musculus", category="C5", subcategory="BP")
+names(GO$genesets) <- names(GO$genesets) %>%  strsplit( "GOBP_" ) %>% sapply( tail, 1 )
+lmultihyp3 <- hypeR(diff_list, GO, background = nrow(neut@assays$SCT@data))
+h3 <- hyp_dots(lmultihyp3, fdr=0.05, merge = TRUE, top = 30, title = "GO Biological Process")
+h3
+```
+
+
+
+```{r}
+neutro_sub <- subset(e7386_imm, seurat_clusters %in% c(1,3,6,9,11,14) & treatment != "control")
+neutro_sub$seurat_clusters <- factor(neutro_sub$seurat_clusters, levels = c(1,3,14,6,9,11))
+neutro_sub$treatment <- factor(neutro_sub$treatment, levels = c("4NQO control", "4NQO + E7386; 25 mg/kg", "4NQO+ E7386; 50 mg/kg"))
+table(neutro_sub$treatment, neutro_sub$seurat_clusters)
+```
+
+```{r}
+neutro_sub$neutrotime <- ifelse(neutro_sub$seurat_clusters %in% c(1,3), "late", 
+                                ifelse(neutro_sub$seurat_clusters %in% c(6,9), "early", 
+                                       "mix"))
+neutro_sub$neutrotime1 <- ifelse(neutro_sub$seurat_clusters %in% c(1,3,14), "late", "early")
+
+
+neutro_sub$trt_mod <- ifelse(neutro_sub$treatment %in% c('4NQO + E7386; 25 mg/kg', '4NQO+ E7386; 50 mg/kg'), as.character("E7386"),  as.character(neutro_sub$treatment))
+neutro_sub$trt_mod <- factor(neutro_sub$trt_mod, levels = c("E7386", "4NQO control"))
+
+ftest_imm(samples = c( 'E7386', '4NQO control'), obj = neutro_sub, cond1 = "neutrotime", cond2 = "trt_mod")
+ftest_imm(samples = c( 'E7386', '4NQO control'), obj = neutro_sub, cond1 = "neutrotime1", cond2 = "trt_mod")
+
+ftest_imm(samples = c( 'E7386', '4NQO control'), obj = neutro_sub, cond1 = "seurat_clusters", cond2 = "trt_mod")
+```
+
+
+From the cytokine paper - https://www-nature-com.ezproxy.bu.edu/articles/s41586-023-06816-9/figures/3
+DEGs within neutrophils one vs all between sub neutrophils cytokines
+
+at the cluster level
+
+```{r}
+#IFNGa,b
+ge_boxplot(genes = c("GBP2", "IFI47", "HERC6", "GBP5", "ISG15"), obj = neutro_sub, cond = "seurat_clusters", ncol = 5, lev = c(1,3,14,6,9,11), title = "IFNGa,b")
+
+#IL1A,B
+ge_boxplot(genes = c("CXCL3", "CXCL2", "CISH", "SRGN"), obj = neutro_sub, cond = "seurat_clusters", ncol = 4, lev = c(1,3,14,6,9,11), title = "IL1a,b")
+
+#TNF
+ge_boxplot(genes = c("SOD2", "MARCKSL1", "MAPKAPK2", "CCL3"), obj = neutro_sub, cond = "seurat_clusters", ncol = 4, lev = c(1,3,14,6,9,11), title = "TNF")
+
+#GM-CSF
+ge_boxplot(genes = c("HBEGF", "SDAD1", "FFAR2", "CAR4", "F2RL2"), obj = neutro_sub, cond = "seurat_clusters", ncol = 5, lev = c(1,3,14,6,9,11), title = "GM-CSF")
+```
+
+at the NT group level
+
+```{r}
+#IFNGa,b
+ge_boxplot(genes = c("GBP2", "IFI47", "HERC6", "GBP5", "ISG15"), obj = neutro_sub, cond = "neutrotime1", ncol = 5, lev = c("early", "late"), title = "IFNGa,b")
+
+#IL1A,B
+ge_boxplot(genes = c("CXCL3", "CXCL2", "CISH", "SRGN"), obj = neutro_sub, cond = "neutrotime1", ncol = 4, lev = c("early", "late"), title = "IL1a,b")
+
+#TNF
+ge_boxplot(genes = c("SOD2", "MARCKSL1", "MAPKAPK2", "CCL3"), obj = neutro_sub, cond = "neutrotime1", ncol = 4, lev = c("early", "late"), title = "TNF")
+
+#GM-CSF
+ge_boxplot(genes = c("HBEGF", "SDAD1", "FFAR2", "CAR4", "F2RL2"), obj = neutro_sub, cond = "neutrotime1", ncol = 5,  lev = c("early", "late"), title = "GM-CSF")
+```
+
+```{r}
+VlnPlot(neutro_sub, features = c("IFNG", "IL1B", "TNF"), group.by = "seurat_clusters", pt.size = 0, assay = "SCT", slot = "scale.data")
+```
+
+## T-cells
+
+### Genes of Interest
+
+```{r}
+tcells <- subset(e7386_imm, singleRcelltype %in% c("T cells", "Tgd") & treatment != "control")
+tcells$treatment <- factor(tcells$treatment, levels = c("4NQO control", "4NQO + E7386; 25 mg/kg", "4NQO+ E7386; 50 mg/kg"))
+
+tcells$trt_mod <- ifelse (tcells$treatment %in% c("4NQO + E7386; 25 mg/kg", "4NQO+ E7386; 50 mg/kg"), as.character("E7386"), as.character(tcells$treatment))
+
+#new "CD4", "CD8A", "PDCD1", "CTLA4"
+v1 <- VlnPlot(tcells, features = c("CD4"), group.by = "trt_mod", assay = "SCT", slot = "scale.data", 
+             pt.size = 0, cols = c("red", "salmon", "lightpink")) + ggpubr::stat_compare_means(method = "anova", label = 'p.format') +NoLegend()+ theme(plot.margin = margin(0.1,0.1,2,0.1, "cm")) 
+v2 <- VlnPlot(tcells, features = c("CD8A"), group.by = "trt_mod", assay = "SCT", slot = "scale.data", 
+             pt.size = 0, cols = c("red", "salmon", "lightpink")) + ggpubr::stat_compare_means(method = "anova", label = 'p.format')+NoLegend()+ theme(plot.margin = margin(0.1,0.1,2,0.1, "cm")) 
+v3 <- VlnPlot(tcells, features = c("PDCD1"), group.by = "trt_mod", assay = "SCT", slot = "scale.data", 
+             pt.size = 0, cols = c("red", "salmon", "lightpink")) + ggpubr::stat_compare_means(method = "anova", label = 'p.format')+NoLegend()+ theme(plot.margin = margin(0.1,0.1,2,0.1, "cm")) 
+v4 <- VlnPlot(tcells, features = c("CTLA4"), group.by = "trt_mod", assay = "SCT", slot = "scale.data", 
+             pt.size = 0, cols = c("red", "salmon", "lightpink")) + ggpubr::stat_compare_means(method = "anova", label = 'p.format')+NoLegend()+ theme(plot.margin = margin(0.1,0.1,2,0.1, "cm")) 
+
+g <- ggpubr::ggarrange(v1,v2,v3,v4, ncol = 4, nrow = 1) 
+g
+#ggsave(plot = g, filename = file.path(PATH, "mmkhan_e7386/results/e7386_images/2024_03_10_tcell_genes.png"), width = 18, height = 5, dpi = 300)
+
+```
+
+### GSVA T-cell Sig.
+03/10
+
+```{r eval=F}
+enr_custom <- readxl::read_excel(path = file.path("/restricted/projectnb/montilab-p/CBMrepositoryData/otherStudies/scRNAseq/lung/2022_08_04_SherrD_SnyderM_10X_0223_CD45+_complete/processed_data/ciber_imm_sigs_mouse_final list for sorting.xlsx"), sheet = 2, range = readxl::cell_rows(1:57))
+enr_tcells <- enr_custom
+
+enr_res <- apply(enr_tcells, 2, function(x) toupper(x))
+list_enr <- apply(enr_res, 2, function(x) list(x))
+list_enr$X <- NULL
+#remove NAs
+list_enr_new <- lapply(list_enr, function(x) unique(x[[1]])[!is.na(unique(x[[1]]))])
+names(list_enr_new) <- paste("ciber_", names(list_enr_new), sep = "")
+
+tcell_sig <- list_enr_new[names(list_enr_new) %in% c("ciber_T cells CD8", "ciber_T cells CD4 naive", "ciber_T cells CD4 memory resting", "ciber_T cells CD4 memory activated")]
+tcell_gsva <- data.frame(t(GSVA::gsva(as.matrix(e7386_imm@assays$SCT@counts), tcell_sig)))
+saveRDS(tcell_gsva, file.path(PATH, "mmkhan_e7386/results/2024_09_04_4nqo_e7386_gsva_tcell.rds"))
+```
+
+```{r}
+tcell_gsva <- readRDS(file.path(PATH, "mmkhan_e7386/results/2024_09_04_4nqo_e7386_gsva_tcell.rds"))
+tcell_gsva_mod <- tcell_gsva[rownames(tcell_gsva) %in% colnames(tcells@assays$SCT),]
+
+tcell_gsva_mod$treatment <- tcells$treatment[match(rownames(tcell_gsva_mod), colnames(tcells))]
+tcell_gsva_mod <- tcell_gsva_mod %>% filter(treatment != "control")
+tcell_gsva_mod$trt_mod <- ifelse (tcell_gsva_mod$treatment %in% c("4NQO + E7386; 25 mg/kg", "4NQO+ E7386; 50 mg/kg"), as.character("E7386"), as.character(tcell_gsva_mod$treatment))
+
+tcell_gsva_mod <- tcell_gsva_mod[!names(tcell_gsva_mod)=="treatment"]
+gsvaResT <- tcell_gsva_mod
+condition <- "trt_mod"
+cond <- as.list(gsvaResT[, condition ,drop = FALSE])
+gsvaResT[, paste(condition, collapse = "_")] <- cond
+gsvaResFlat <- reshape2::melt(gsvaResT, id.vars = paste(condition,
+                                                          collapse = "_"),
+                                variable.name = "pathway")
+g1 <-  ggplot2::ggplot(gsvaResFlat, ggplot2::aes_string(
+    x = "pathway", y = "value",
+    fill="trt_mod")) +
+    ggplot2::geom_boxplot(outlier.shape = NA) +
+    ggpubr::stat_compare_means(method = "anova",  label = 'p.format', vjust = 0.75)+
+    #ggplot2::scale_color_manual(values=c("gray", "red","salmon", "lightpink"))+
+    ggplot2::scale_fill_manual(values=c( "red","salmon", "lightpink"))+
+    ggplot2::theme_bw()+
+    geom_hline(yintercept=0, linetype="dashed", color = "red")+
+    ggplot2::theme(strip.text.x = ggplot2::element_text(size = 10))+
+    ggplot2::theme(axis.text.x = ggplot2::element_text(angle = 45, hjust = 1, size = 8))+
+   ggplot2::theme(legend.position="none")+
+    ggplot2::ylab("GSVA Score")
+g1
+
+#ggsave(g1, filename = file.path(PATH, "mmkhan_e7386/results/e7386_images/2024_03_10_tcell_modules.png"), width = 6, height = 5, dpi = 300)
+```
+
+## Macrophages
+
+```{r eval=F}
+macro_sub <- subset(e7386_imm,  singleRcelltype %in% c("Macrophages"))
+
+macro_sub <- PercentageFeatureSet(macro_sub, pattern = "^MT-", col.name = "percent.mt")
+macro_sub <- NormalizeData(macro_sub, normalization.method = "LogNormalize", scale.factor = 10000)
+macro_sub <- FindVariableFeatures(macro_sub, selection.method = "vst", nfeatures = 5000)
+all.genes <- rownames(macro_sub)
+macro_sub <- ScaleData(macro_sub, all.genes)
+#e7386_obj <- RunPCA(e7386_obj, features = VariableFeatures(object = e7386_obj), verbose = FALSE)
+
+
+# run sctransform
+macro_sub <- SCTransform(macro_sub, vars.to.regress = "percent.mt", verbose = FALSE)
+macro_sub <- RunPCA(macro_sub, verbose = FALSE)
+ElbowPlot(macro_sub)
+
+macro_sub <- RunUMAP(macro_sub, dims = 1:15, verbose = FALSE)
+
+macro_sub <- FindNeighbors(macro_sub, dims = 1:15, verbose = FALSE)
+macro_sub <- FindClusters(macro_sub, verbose = FALSE, resolution = 0.4, random.seed = 5678, algorithm = "leiden")
+
+DimPlot(macro_sub, group.by = "seurat_clusters")
+DimPlot(macro_sub, split.by = "treatment")
+
+saveRDS(macro_sub, file.path(PATH, "mmkhan_e7386/data/2023_05_25_macro_4nqo_e7386.rds"))
+```
+
+```{r}
+macro_sub <- readRDS(file.path(PATH, "mmkhan_e7386/data/2023_05_25_macro_4nqo_e7386.rds"))
+```
+
+```{r}
+df <- data.frame(table(macro_sub$treatment))
+colnames(df) <- c("Treatment", "Number")
+
+g <- ggplot(df, aes_string(x = "Treatment", y = "Number")) +
+  geom_bar(stat = "identity") +
+  #geom_text(aes(label=Number), vjust=1.6, color="white", size=3.5) +
+  geom_label(aes(label=Number), fontface = "bold")
+g
+#ggsave(plot = g, filename = file.path(PATH, "mmkhan_e7386/results/e7386_images/macro_barplot.png"), width = 3, height = 2, dpi = 300)
+```
+
+
+GSVA on ciber
+
+```{r}
+enr_custom <- readxl::read_excel(path = file.path("/restricted/projectnb/montilab-p/CBMrepositoryData/otherStudies/scRNAseq/lung/2022_08_04_SherrD_SnyderM_10X_0223_CD45+_complete/processed_data/ciber_imm_sigs_mouse_final list for sorting.xlsx"), sheet = 2, range = readxl::cell_rows(1:57))
+enr_tcells <- enr_custom[,c("Macrophages M0", "Macrophages M1", "Macrophages M2")]
+
+enr_res <- apply(enr_tcells, 2, function(x) toupper(x))
+list_enr <- apply(enr_res, 2, function(x) list(x))
+list_enr$X <- NULL
+#remove NAs
+list_enr_new <- lapply(list_enr, function(x) unique(x[[1]])[!is.na(unique(x[[1]]))])
+
+gsva_macro_sub <- GSVA::gsva(expr = macro_sub@assays$SCT@data, gset.idx.list = list_enr_new, parallel.sz=4)
+gsva_macro_sub <- as.data.frame(t(gsva_macro_sub))
+#saveRDS(gsva_macro_sub, file.path(PATH, "mmkhan_e7386/results/06_01_gsva_macro_ciber.rds"))
+
+gsva_macro_sub$seurat_clusters <- macro_sub$seurat_clusters[match(colnames(macro_sub), rownames(gsva_macro_sub))]
+```
+
+Unique only 
+
+```{r}
+library(UpSetR)
+listInput <- list(M0=list_enr_new$`Macrophages M0`, M1=list_enr_new$`Macrophages M1`, M2=list_enr_new$`Macrophages M2`)
+upset(fromList(listInput), line.size = 0.25)
+
+listInput$M0 <- list_enr_new$`Macrophages M0`[!list_enr_new$`Macrophages M0` %in% c(list_enr_new$`Macrophages M1`, list_enr_new$`Macrophages M2`)]
+listInput$M1 <- list_enr_new$`Macrophages M1`[!list_enr_new$`Macrophages M1` %in% c(list_enr_new$`Macrophages M0`, list_enr_new$`Macrophages M2`)]
+listInput$M2 <- list_enr_new$`Macrophages M2`[!list_enr_new$`Macrophages M2` %in% c(list_enr_new$`Macrophages M1`, list_enr_new$`Macrophages M0`)]
+
+upset(fromList(listInput), line.size = 0.25)
+```
+
+```{r eval=F}
+gsva_macro_sub <- GSVA::gsva(expr = macro_sub@assays$SCT@data, gset.idx.list = listInput, parallel.sz=4)
+gsva_macro_sub <- as.data.frame(t(gsva_macro_sub))
+#saveRDS(gsva_macro_sub, file.path(PATH, "mmkhan_e7386/results/06_01_gsva_macro_ciber.rds"))
+```
+
+```{r}
+gsva_macro_sub <- readRDS(file.path(PATH, "mmkhan_e7386/results/06_01_gsva_macro_ciber.rds"))
+
+gsva_macro_sub_box <- gsva_macro_sub[,1:3]
+gsva_macro_sub$seurat_clusters <- macro_sub$seurat_clusters[match(colnames(macro_sub), rownames(gsva_macro_sub))]
+gsva_macro_sub_box$treatment <- macro_sub$treatment[match(colnames(macro_sub), rownames(gsva_macro_sub_box))]
+
+gsvaResT <- gsva_macro_sub_box
+condition <- "treatment"
+cond <- as.list(gsvaResT[, condition ,drop = FALSE])
+gsvaResT[, paste(condition, collapse = "_")] <- cond
+gsvaResFlat <- reshape2::melt(gsvaResT, id.vars = paste(condition,
+                                                          collapse = "_"),
+                                variable.name = "pathway")
+g1 <-  ggplot2::ggplot(gsvaResFlat, ggplot2::aes_string(
+    x = "treatment", y = "value",
+    color = "treatment")) +
+    ggplot2::geom_boxplot(outlier.shape = NA) +
+    ggpubr::stat_compare_means(method = "anova",  label = 'p.format', vjust = 0.75)+
+    ggplot2::theme_bw()+
+    ggplot2::facet_wrap(~pathway, scales = "free_y", ncol = 5 ) +
+    ggplot2::theme(strip.text.x = ggplot2::element_text(size = 10))+
+    ggplot2::theme(axis.text.x = ggplot2::element_text(angle = 45, hjust = 1, size = 8))+
+   geom_hline(yintercept=0, linetype="dashed", color = "red")+
+   ggplot2::theme(legend.position="none")+
+    ggplot2::ylab("GSVA Score")
+g1
+
+#ggsave(plot = g1, filename = file.path(PATH, "mmkhan_e7386/results/e7386_images/gsva_imm_ciber.png"), width = 16, height = 10, dpi = 300)
+
+g <- ggplot2::ggplot(gsvaResFlat, ggplot2::aes_string(
+    x = "treatment", y = "value",
+    fill="pathway", color="pathway")) +
+    geom_pointrange(stat = "summary") +
+    geom_hline(yintercept=0, linetype="dashed", color = "red") +
+    ggplot2::theme_bw() +
+    ggplot2::scale_fill_manual(values=c("green1", "green3", "green4")) +
+    ggplot2::scale_color_manual(values=c("green1", "green3", "green4")) +
+    ggplot2::theme(strip.text.x = ggplot2::element_text(size = 10)) +
+    ggplot2::theme(axis.text.x = ggplot2::element_text(angle = 45, hjust = 1, size = 8)) +
+  # ggplot2::theme(legend.position="none") +
+    ggplot2::ylab("GSVA Score")
+g
+#ggsave(plot = g, filename = file.path(PATH, "mmkhan_e7386/results/e7386_images/10_31_gsva_mphage_ptrange.png"), width = 5, height = 3.5, dpi = 300)
+```
+
+```{r}
+
+library(PMCMRplus)
+#gsva_res_mod$treatment <- factor(gsva_macro_sub_box$treatment, levels = c("4NQO control", "4NQO + E7386; 25 mg/kg", "4NQO+ E7386; 50 mg/kg"))
+gsva_macro_sub_box_mod <- gsva_macro_sub_box[gsva_macro_sub_box$treatment!= "control", ]
+gsva_macro_sub_box_mod$treatment <- factor(gsva_macro_sub_box_mod$treatment, levels = c("4NQO control", "4NQO + E7386; 25 mg/kg", "4NQO+ E7386; 50 mg/kg"))
+
+PMCMRplus::jonckheereTest(x = gsva_macro_sub_box_mod$`Macrophages M0`, gsva_macro_sub_box_mod$treatment, "two.sided")
+PMCMRplus::jonckheereTest(x = gsva_macro_sub_box_mod$`Macrophages M1`, gsva_macro_sub_box_mod$treatment, "two.sided")
+PMCMRplus::jonckheereTest(x = gsva_macro_sub_box_mod$`Macrophages M2`, gsva_macro_sub_box_mod$treatment, "two.sided")
+```
+
+Heatmap
+
+```{r}
+#gsva_res <- readRDS(file.path(PATH,"mmkhan_e7386/results/09_29_gsva_inn_imm_neuro.RDS"))
+gsva_res <- gsva_macro_sub
+
+#heatmap on only clusters that are neutrophil labeled
+#gsva_res <- gsva_res[gsva_res$seurat_clusters %in% c(1,3,6,9,11,14),]
+gsva_res$seurat_clusters <- factor(gsva_res$seurat_clusters)
+gsvaResT <- gsva_res
+condition <- "seurat_clusters"
+cond <- as.list(gsvaResT[, condition ,drop = FALSE])
+gsvaResT[, paste(condition, collapse = "_")] <- cond
+gsvaResFlat <- reshape2::melt(gsvaResT, id.vars = paste(condition,
+                                                          collapse = "_"),
+                                variable.name = "pathway")
+
+gsva_mean <- gsvaResFlat %>% group_by(seurat_clusters, pathway)  %>%
+    dplyr::summarize(Mean = mean(value, na.rm=TRUE))
+
+transformed_mat <- xtabs(Mean~., gsva_mean)
+attr(transformed_mat, "class") <- NULL #ignore this
+
+transformed_mat <- scale(transformed_mat)
+
+cluster_anno <- levels(gsva_mean$seurat_clusters)
+
+ComplexHeatmap::Heatmap(as.matrix(t(transformed_mat)), name = "Mean GSVA scores",  
+        column_split = factor(cluster_anno),
+        cluster_columns = T,
+        show_column_dend = FALSE,
+        cluster_column_slices = TRUE,
+        column_title_gp = grid::gpar(fontsize = 12),
+        column_gap = ggplot2::unit(0.5, "mm"),
+        cluster_rows = F,
+        show_row_dend = FALSE,
+        #col = col_fun,
+        row_names_gp = grid::gpar(fontsize = 12),
+        column_title_rot = 90,
+        top_annotation = HeatmapAnnotation(foo = anno_block(gp = gpar(fill = scales::hue_pal()(9)))),
+        show_column_names = FALSE,
+        use_raster = TRUE,
+        raster_quality = 4)
+```
+
+```{r}
+new_clust_macro <- c("M2", "M1", "M2", "M2", "M0", "M1")
+
+levels(Idents(macro_sub)) <- new_clust_macro
+
+macro_sub$new_macro_clust <- Idents(macro_sub)
+macro_sub$new_macro_clust <- factor(macro_sub$new_macro_clust, levels = c("M0", "M1", "M2"))
+
+DimPlot(macro_sub, group.by = "new_macro_clust")
+
+rel_prop(obj = macro_sub, cond1 = "sample", cond2 = "new_macro_clust")
+rel_prop(obj = macro_sub, cond1 = "treatment", cond2 = "new_macro_clust")
+```
+```{r}
+DotPlot(macro_sub, features = c( "TNF", "IL1A", "IL1B", "IL6", "NOS2", "TLR2", "TLR4", "CD80", "CD86"), group.by = "new_macro_clust") +  ggplot2::theme(axis.text.x = element_text(angle = 45, hjust = 1))
+DotPlot(macro_sub, features = c("CSF1R", "MRC1", "PPARG", "ARG1", "CD163", "CLEC10A", "PDCD1LG2",  "RETNLA"), group.by = "new_macro_clust") +  ggplot2::theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+
+
+
+
+

@@ -1,0 +1,257 @@
+---
+title: "Comparis of ICG001 and E7386 signatures in cell lines"
+subtitle: "Subtitle"
+author: "Monti Lab"
+date:   "`r format(Sys.Date(), '%B %d, %Y')`"
+output:
+  html_document:
+    theme: united
+    code_folding: show
+    css: style.css
+    toc: true
+    toc_float: true
+---
+
+```{r opts, echo=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message=FALSE, warning=FALSE)
+```
+
+```{r settings}
+library(Biobase)
+## library(...)
+PATH <- file.path( Sys.getenv("MLAB"), "projects/oralcancer/bcat_cbp_inhibition/4nqo/smonti" ) 
+DPATH <- file.path(Sys.getenv("MLAB"), "projects/sigRepo/archive/results")
+
+## control variables
+do_save <- TRUE
+```
+
+# Load data
+
+```{r load.data}
+## see $MLAB/projects/sigRepo/archive/scripts/signature.e7386_hnsc.Rmd
+e7386_hsc3 <- readRDS(file.path(DPATH, "e7386_hsc3_hnsc_diffanal.RDS"))
+e7386_cal27 <- readRDS(file.path(DPATH, "e7386_cal27_hnsc_diffanal.RDS"))
+
+## see $MLAB/projects/sigRepo/archive/scripts/signature.icg001_hnsc.Rmd
+icg001_hsc3 <- readRDS(file.path(DPATH, "icg001_hsc3_hnsc_diffanal.RDS"))
+icg001_cal27 <- readRDS(file.path(DPATH, "icg001_cal27_hnsc_diffanal.RDS"))
+```
+
+## Extract Signatures {.tabset}
+
+### E7386
+```{r extract.signatures.e7386}
+maxQ <- 0.01
+minFC <- 1.5
+
+e7386_hsc3 <- e7386_hsc3 |> dplyr::mutate(Symbol = toupper(Symbol))
+e7386_ranks <- list(
+  hsc3_up = e7386_hsc3 |> dplyr::arrange(desc(t)) |> dplyr::select(Symbol, t) |> tibble::deframe(),
+  cal27_up = e7386_cal27 |> dplyr::arrange(desc(t)) |> dplyr::select(Symbol, t) |> tibble::deframe(),
+  hsc3_dn = e7386_hsc3 |> dplyr::arrange(t) |> dplyr::mutate(t = -t) |> dplyr::select(Symbol, t) |> tibble::deframe(),
+  cal27_dn = e7386_cal27 |> dplyr::arrange(t) |> dplyr::mutate(t = -t) |> dplyr::select(Symbol, t) |> tibble::deframe()
+) 
+names(e7386_ranks) <- paste("e7386", names(e7386_ranks), sep = "_")
+
+e7386_sigs <- list(
+  hsc3_up = dplyr::filter(e7386_hsc3, FDR.q.filtered <= maxQ, fold.change >= +minFC) |>
+    dplyr::pull(Symbol),
+  hsc3_dn = dplyr::filter(e7386_hsc3, FDR.q.filtered <= maxQ,fold.change <= -minFC) |>
+    dplyr::pull(Symbol),
+  cal27_up = dplyr::filter(e7386_cal27, FDR.q.filtered <= maxQ, fold.change >= +minFC) |>
+    dplyr::pull(Symbol),
+  cal27_dn = dplyr::filter(e7386_cal27, FDR.q.filtered <= maxQ, fold.change <= -minFC) |>
+    dplyr::pull(Symbol)
+)
+e7386_sigs <- c(e7386_sigs, list(
+  comb_up = intersect(e7386_sigs$hsc3_up, e7386_sigs$cal27_up),
+  comb_dn = intersect(e7386_sigs$hsc3_dn, e7386_sigs$cal27_dn)
+))
+names(e7386_sigs) <- paste("e7386", names(e7386_sigs), sep = "_")
+```
+
+### ICG-001
+```{r extract.signatures.icg001}
+icg001_hsc3 <- icg001_hsc3 |> dplyr::mutate(Symbol = toupper(Symbol))
+icg001_ranks <- list(
+  hsc3_up = icg001_hsc3 |> dplyr::arrange(desc(t)) |> dplyr::select(Symbol, t) |> tibble::deframe(),
+  cal27_up = icg001_cal27 |> dplyr::arrange(desc(t)) |> dplyr::select(Symbol, t) |> tibble::deframe(),
+  hsc3_dn = icg001_hsc3 |> dplyr::arrange(t) |> dplyr::mutate(t = -t) |> dplyr::select(Symbol, t) |> tibble::deframe(),
+  cal27_dn = icg001_cal27 |> dplyr::arrange(t) |> dplyr::mutate(t = -t) |> dplyr::select(Symbol, t) |> tibble::deframe()
+)
+names(icg001_ranks) <- paste("icg001", names(icg001_ranks), sep = "_")
+
+icg001_sigs <- list(
+  hsc3_up = dplyr::filter(icg001_hsc3, FDR.q.filtered <= maxQ, fold.change >= +minFC) |>
+    dplyr::pull(Symbol),
+  hsc3_dn = dplyr::filter(icg001_hsc3, FDR.q.filtered <= maxQ, fold.change <= -minFC) |>
+    dplyr::pull(Symbol),
+  cal27_up = dplyr::filter(icg001_cal27, FDR.q.filtered <= maxQ, fold.change >= +minFC) |>
+    dplyr::pull(Symbol),
+  cal27_dn = dplyr::filter(icg001_cal27, FDR.q.filtered <= maxQ, fold.change <= -minFC) |>
+    dplyr::pull(Symbol)
+)
+icg001_sigs <- c(icg001_sigs, list(
+  comb_up = intersect(icg001_sigs$hsc3_up, icg001_sigs$cal27_up),
+  comb_dn = intersect(icg001_sigs$hsc3_dn, icg001_sigs$cal27_dn)
+))
+names(icg001_sigs) <- paste("icg001", names(icg001_sigs), sep = "_")
+```
+
+## {-}
+
+```{r signature.summary}
+data.frame(
+  E7386 = lengths(e7386_sigs),
+  ICG001 = lengths(icg001_sigs),
+  overlap = sapply(
+    seq(1,length(e7386_sigs)), 
+    \(i) length(intersect(e7386_sigs[[i]], icg001_sigs[[i]]))
+  )
+) |> 
+  tibble::rownames_to_column(var = "signature") |>
+  dplyr::mutate(signature = stringr::str_remove(signature, "e7386_"))
+```
+
+# Signature Overlap {.tabset}
+## HSC3
+```{r signature.overlap}
+hsc3_sigs <- c(
+  e7386_sigs[grep("hsc3", names(e7386_sigs))],
+  icg001_sigs[grep("hsc3", names(icg001_sigs))]
+)[c(1,3,2,4)] 
+names(hsc3_sigs) <- stringr::str_remove(names(hsc3_sigs), "_hsc3")
+#   stringr::str_replace("_up", "⬆︎" )|>
+#   stringr::str_replace("_dn", "⬇︎︎" )
+venn::venn(hsc3_sigs, zcolor="style", ilcs=1.2, sncs=1, box = FALSE, ilabels = "counts", main = "HSC3")
+```
+
+## Cal27
+```{r}
+cal27_sigs <- c(
+  e7386_sigs[grep("cal27", names(e7386_sigs))],
+  icg001_sigs[grep("cal27", names(icg001_sigs))]
+)[c(1,3,2,4)] 
+names(cal27_sigs) <- stringr::str_remove(names(cal27_sigs), "_cal27")
+#   stringr::str_replace("_up", "⬆︎" )|>
+#   stringr::str_replace("_dn", "⬇︎︎" )
+venn::venn(cal27_sigs, zcolor="style", ilcs=1.2, sncs=1, box = FALSE, ilabels = "counts", main = "Cal27")
+
+# library(eulerr)
+# plot(euler(cal27_sigs),
+#      quantities = list(type = "counts", font = 3),
+#      main = "HSC3",
+#      fills = TRUE,
+#      cex = 1.2)
+```
+
+# {-}
+
+# Signature Enrichment {.tabset}
+```{r signature.enrichment}
+## signatures to test (properly ordered)
+sigs <- c(
+  e7386_sigs[!grepl("comb", names(e7386_sigs))],
+  icg001_sigs[!grepl("comb", names(icg001_sigs))]
+)
+df_ord <- sapply(names(sigs), \(x) stringr::str_split_1(x, "_")) |>
+  t() |> data.frame()
+sigs <- sigs[order(df_ord$X3, df_ord$X2)]
+
+rnk_sigs <- c(e7386_ranks, icg001_ranks)[names(sigs)]
+
+## geneset compendia to use
+hallmark <- hypeR::msigdb_gsets(species = "Homo sapiens", collection = "H", clean=TRUE)
+reactome <- hypeR::msigdb_gsets(species = "Homo sapiens", collection = "C2", 
+                                subcollection = "CP:REACTOME", clean = TRUE)
+biocarta <- hypeR::msigdb_gsets(species = "Homo sapiens", collection = "C2", 
+                                subcollection = "CP:BIOCARTA", clean = TRUE)
+pid <- hypeR::msigdb_gsets(species = "Homo sapiens", collection = "C2", 
+                                subcollection = "CP:PID", clean = TRUE)
+```
+
+## Hypergeometric {.tabset}
+### Hallmarks
+```{r hallmarks.hyper}
+hyp_hall <- hypeR::hypeR(
+  signature = sigs, genesets = hallmark, background = 20000, fdr = 0.05
+)  
+hypeR::hyp_dots(hyp_hall, merge = TRUE, fdr = 0.01)
+hypeR::rctbl_build(hyp_hall)
+```
+
+### PID
+```{r pid.hyper}
+hyp_pid <- hypeR::hypeR(
+  signature = sigs, genesets = pid, background = 20000, fdr = 0.05
+)  
+hypeR::hyp_dots(hyp_pid, merge = TRUE, fdr = 0.05, top = 30)
+hypeR::rctbl_build(hyp_pid)
+```
+
+### Biocarta
+```{r biocarta.hyper}
+hyp_bioc <- hypeR::hypeR(
+  signature = sigs, genesets = biocarta, background = 20000, fdr = 0.05
+)  
+hypeR::hyp_dots(hyp_bioc, merge = TRUE, fdr = 0.05, top = 30)
+hypeR::rctbl_build(hyp_bioc)
+```
+
+### Reactome
+```{r reactome.hyper}
+hyp_react <- hypeR::hypeR(
+  signature = sigs, genesets = reactome, background = 20000, fdr = 0.05
+)  
+hypeR::hyp_dots(hyp_react, merge = TRUE, fdr = 0.05, top = 30)
+hypeR::rctbl_build(hyp_react)
+```
+
+## {-}
+
+## KS {.tabset}
+### Hallmarks
+```{r hallmarks.ks}
+hyp_hall <- hypeR::hypeR(
+  signature = rnk_sigs, test = "ks", genesets = hallmark, background = 20000, fdr = 0.05
+)
+hypeR::hyp_dots(hyp_hall, merge = TRUE, fdr = 0.05)
+hypeR::rctbl_build(hyp_hall)
+```
+
+### PID
+```{r pid.ks}
+hyp_pid <- hypeR::hypeR(
+  signature = rnk_sigs, test = "ks", genesets = pid, background = 20000, fdr = 0.05
+)  
+hypeR::hyp_dots(hyp_pid, merge = TRUE, fdr = 0.05, top = 30)
+hypeR::rctbl_build(hyp_pid)
+```
+
+### Biocarta
+```{r biocarta.ks}
+hyp_bioc <- hypeR::hypeR(
+  signature = rnk_sigs, test = "ks", genesets = biocarta, background = 20000, fdr = 0.05
+)  
+hypeR::hyp_dots(hyp_bioc, merge = TRUE, fdr = 0.05, top = 30)
+hypeR::rctbl_build(hyp_bioc)
+```
+
+### Reactome
+```{r reactome.ks}
+hyp_react <- hypeR::hypeR(
+  signature = rnk_sigs, test = "ks", genesets = reactome, background = 20000, fdr = 0.05
+)  
+hypeR::hyp_dots(hyp_react, merge = TRUE, fdr = 0.05, top = 30)
+hypeR::rctbl_build(hyp_react)
+```
+
+## {-}
+
+# {-}
+
+# Save
+```{r save, echo=do_save, eval=do_save}
+```
+

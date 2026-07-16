@@ -1,0 +1,1147 @@
+---
+title: "Human HNSC datasets"
+author: "M. Muzamil Khan"
+date: "2023-07-21"
+output:
+  html_document:
+    code_folding: hide
+    theme: flatly
+    toc: yes
+    toc_float: true
+  html_notebook:
+    code_folding: hide
+    theme: flatly
+    toc: yes
+    toc_float: true
+  pdf_document:
+    toc: yes
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+.libPaths("/restricted/projectnb/montilab-p/personal/mmkhan/R/4.1/")
+PATH <- "/restricted/projectnb/montilab-p/projects/oralcancer/4nqo/"
+library(Seurat)
+library(dplyr)
+library(ggplot2)
+library(ComplexHeatmap)
+```
+
+
+## Process Choi dataset {.tabset .tabset-fade .tabset-pills}
+
+Choi et al [https://www-nature-com.ezproxy.bu.edu/articles/s41467-023-36691-x#Abs1]
+
+```{r eval=F}
+count_data <- read.table(file = file.path(PATH, "mmkhan_e7386/data/leuko_choi/GSE181919_UMI_counts.txt.gz"))
+meta_data <-  read.table(file = file.path(PATH, "mmkhan_e7386/data/leuko_choi/GSE181919_Barcode_metadata.txt.gz"))
+rownames(meta_data) <- gsub(x = rownames(meta_data), pattern = "-", replacement = ".")
+
+choi_seurat <- Seurat::CreateSeuratObject(counts = count_data, meta.data = meta_data)
+ 
+# subsets hpv + and - datasets
+choi_seurat_pos <- subset(choi_seurat, hpv == "HPV+")
+choi_seurat_neg <- subset(choi_seurat, hpv == "HPV-")
+```
+
+### HPV negative dataset
+
+```{r eval=F}
+choi_seurat_neg <- PercentageFeatureSet(choi_seurat_neg, pattern = "^MT-", col.name = "percent.mt")
+choi_seurat_neg <- NormalizeData(choi_seurat_neg, normalization.method = "LogNormalize", scale.factor = 10000)
+choi_seurat_neg <- FindVariableFeatures(choi_seurat_neg, selection.method = "vst", nfeatures = 5000)
+all.genes <- rownames(choi_seurat_neg)
+choi_seurat_neg <- ScaleData(choi_seurat_neg, all.genes)
+```
+
+Explained PC variance
+
+```{r eval=F}
+choi_seurat_neg <- SCTransform(choi_seurat_neg, vars.to.regress = "percent.mt", verbose = FALSE,  method = "glmGamPoi")
+choi_seurat_neg <- RunPCA(choi_seurat_neg, verbose = FALSE)
+
+ElbowPlot(choi_seurat_neg, reduction = "pca", ndims = 50)
+
+mat <- Seurat::GetAssayData(choi_seurat_neg, assay = "RNA", slot = "scale.data")
+pca <- choi_seurat_neg[["pca"]]
+
+# Get the total variance:
+total_variance <- sum(matrixStats::rowVars(mat))
+
+eigValues = (pca@stdev)^2  ## EigenValues
+varExplained = eigValues / total_variance
+varExplained
+sum(varExplained)
+sum(varExplained[1:15])
+
+```
+
+```{r eval=F}
+# run sctransform
+choi_seurat_neg <- RunUMAP(choi_seurat_neg, dims = 1:15, verbose = FALSE)
+
+choi_seurat_neg <- FindNeighbors(choi_seurat_neg, dims = 1:15, verbose = FALSE)
+choi_seurat_neg <- FindClusters(choi_seurat_neg, verbose = FALSE, resolution = 0.4, random.seed = 1234, algorithm = "leiden")
+saveRDS(choi_seurat_neg, file = file.path(PATH, "mmkhan_e7386/data/2023_07_21_choi_seurat_neg.rds"))
+```
+
+
+### HPV negative epi. dataset
+
+```{r eval=F}
+choi_epi <- subset(choi_seurat_neg, cell.type %in% c('Epithelial.cells', 'Malignant.cells'))
+table(choi_epi$tissue.type)
+choi_epi <- subset(choi_epi, tissue.type %in% c("CA", "LP", "NL"))
+```
+
+```{r eval=F}
+choi_epi <- PercentageFeatureSet(choi_epi, pattern = "^MT-", col.name = "percent.mt")
+choi_epi <- NormalizeData(choi_epi, normalization.method = "LogNormalize", scale.factor = 10000)
+choi_epi <- FindVariableFeatures(choi_epi, selection.method = "vst", nfeatures = 5000)
+all.genes <- rownames(choi_epi)
+choi_epi <- ScaleData(choi_epi, all.genes)
+
+choi_epi <- SCTransform(choi_epi, vars.to.regress = "percent.mt", verbose = FALSE,  method = "glmGamPoi")
+choi_epi <- RunPCA(choi_epi, verbose = FALSE)
+
+ElbowPlot(choi_epi, reduction = "pca", ndims = 50)
+
+mat <- Seurat::GetAssayData(choi_epi, assay = "RNA", slot = "scale.data")
+pca <- choi_epi[["pca"]]
+
+# Get the total variance:
+total_variance <- sum(matrixStats::rowVars(mat))
+
+eigValues = (pca@stdev)^2  ## EigenValues
+varExplained = eigValues / total_variance
+varExplained
+sum(varExplained)
+sum(varExplained[1:15])
+
+# run sctransform
+choi_epi <- RunUMAP(choi_epi, dims = 1:15, verbose = FALSE)
+
+choi_epi <- FindNeighbors(choi_epi, dims = 1:15, verbose = FALSE)
+choi_epi <- FindClusters(choi_epi, verbose = FALSE, resolution = 0.3, random.seed = 1234, algorithm = "leiden")
+saveRDS(choi_epi, file = file.path(PATH, "mmkhan_e7386/data/2023_07_21_choi_seurat_neg_epi.rds"))
+```
+
+## Load dataset
+
+```{r}
+choi_epi <- readRDS(file = file.path(PATH, "mmkhan_e7386/data/2023_07_21_choi_seurat_neg_epi.rds"))
+choi_epi$cell_id <- rownames(choi_epi@meta.data)
+choi_epi$tissue.type <- factor(choi_epi$tissue.type, levels = c("NL", "LP", "CA"))
+
+DimPlot(choi_epi)
+DimPlot(choi_epi, group.by = "cell.type")
+DimPlot(choi_epi, group.by = "sample.id")
+DimPlot(choi_epi, group.by = "tissue.type")
+```
+## Rel. Proportions
+
+```{r}
+rel_prop <- function(obj, cond1, cond2, cols=NULL) {
+  meta_data <- obj@meta.data
+  dat <- as.data.frame(prop.table(table(meta_data[,cond1], meta_data[,cond2]), margin = 1))
+  colnames(dat) <- c(cond1, cond2, "percent")
+  
+  dat <- dat %>% 
+  group_by_at(cond1) %>% 
+  mutate(cluster_label_y = 1 - (cumsum(percent) - 0.5 * percent)) %>% 
+  ungroup()
+  
+d1 <- ggplot(dat, aes_string(cond1, y = "percent", fill = cond2)) +
+  geom_bar(position = "fill", stat = "identity") +
+  scale_y_continuous(labels = scales::percent) +
+  geom_text(aes(y = cluster_label_y, label = round(100 * percent, 2)), col="white", fontface="bold", size=3)+
+  theme_bw() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1, margin=ggplot2::margin(5, b=10))) 
+
+if(!is.null(cols)){ 
+  d <- d1 +  scale_fill_manual(values = cols)
+} else {
+  d <- d1
+}
+d
+}
+```
+
+```{r}
+rel_prop_boxplot_choi <- function(obj, cond1, cond2) {
+  meta_data <- obj@meta.data
+  dat <- as.data.frame(prop.table(table(meta_data[,cond1], meta_data[,cond2]), margin = 1))
+  colnames(dat) <- c(cond1, cond2, "number")
+  #dat$tissue.type <- meta_data$tissue.type[match(dat$, meta_data$)]
+
+d1 <- ggplot(dat, aes_string(x = cond1, y = "number", fill = cond2)) +
+  geom_boxplot() +
+  theme_bw() +
+  scale_fill_manual(values = c("gray", "red","salmon", "lightpink"))+
+  theme(axis.text.x = element_text(angle = 45, hjust = 1, margin=ggplot2::margin(5, b=10)), legend.position = "bottom") +
+  ylab("%")
+  
+d1
+}
+
+```
+
+```{r}
+r1 <- rel_prop(obj = choi_epi, cond2 = "tissue.type", cond1 = "seurat_clusters", cols = c("black", "#00BA38", "#F8766D"))
+r1
+```
+
+
+## FCM 
+
+not working properly since not all clusters have all samples
+
+```{r eval=F}
+library(parallel)
+clusters <- levels(choi_epi$seurat_clusters)
+famRes <- do.call(bind_rows, mclapply(clusters, function(clust) {
+
+  clRes <- FindConservedMarkers(choi_epi,
+                                ident.1 = clust,
+                                grouping.var = "sample.id",
+                                assay = "SCT",
+                                meta.method = metap::maximump,
+                                test.use = "MAST",
+                                logfc.threshold = 0.25,
+                                min.cells.group = 5,
+                                only.pos = TRUE,
+                                verbose = FALSE)
+
+  if(nrow(clRes) > 0) {
+    clRes <- data.frame(cluster = clust, gene = rownames(clRes), clRes)
+  } else {
+    clRes <- NULL
+  }
+
+  return(clRes)
+
+}, mc.cores = 6))
+
+rownames(famRes) <- NULL
+
+# Fix column names
+colnames(famRes) <- sub("minimump_", "maximump_", colnames(famRes))
+
+# Fix false discovery rate
+famRes$maximump_fdr <- p.adjust(famRes$maximump_p_val, method = "BH")
+
+# Get minimum logFC
+famRes$maximump_logFC <- apply(famRes[, grepl("avg_log2FC", colnames(famRes))],  1, min, na.rm = TRUE)
+
+# Sort columns
+firstCols <- c(1, 2,
+  grep("maximump_", colnames(famRes)),
+  grep("max_pval", colnames(famRes)))
+lastCols <- seq(ncol(famRes))[!seq(ncol(famRes)) %in% firstCols]
+famRes_mod <- famRes[, c(firstCols, lastCols)]
+
+```
+
+not all samples in each cluster, issue with completing
+
+```{r eval=F}
+famRes <- readRDS(file.path(PATH, "mmkhan_e7386/results/07_21_fcm_choi_epi.rds"))
+rownames(famRes) <- NULL
+
+# Fix column names
+colnames(famRes) <- sub("minimump_", "maximump_", colnames(famRes))
+
+# Fix false discovery rate
+famRes$maximump_fdr <- p.adjust(famRes$maximump_p_val, method = "BH")
+
+# Get minimum logFC
+famRes$maximump_logFC <- apply(famRes[, grepl("avg_log2FC", colnames(famRes))],  1, min, na.rm = TRUE)
+
+# Sort columns
+firstCols <- c(1, 2,
+  grep("maximump_", colnames(famRes)),
+  grep("max_pval", colnames(famRes)))
+lastCols <- seq(ncol(famRes))[!seq(ncol(famRes)) %in% firstCols]
+famRes_mod <- famRes[, c(firstCols, lastCols)]
+
+# write.csv(famRes_mod, file.path(PATH, "mmkhan_e7386/results/07_21_fcm_choi_epi.csv"), quote = F)
+```
+
+## FindAllMarkers 
+
+```{r eval=F}
+#fam <- readRDS(file.path(PATH, "mmkhan_e7386/results/07_24_fam_choi_epi.rds"))
+fam <- FindAllMarkers(object = choi_epi,   assay = "SCT", test.use = "MAST", logfc.threshold = 0.25, only.pos = TRUE)
+rownames(fam) <- NULL
+#saveRDS(fam, file.path(PATH, "mmkhan_e7386/results/cluster_markers_choi_epi.rds"))
+```
+
+```{r}
+fam <- readRDS(file.path(PATH, "mmkhan_e7386/results/cluster_markers_choi_epi.rds"))
+fam[fam$gene %in% c("JUN", "FOS", "JUNB", "FOSB", "FOSL1", "TCF4", "CEACAM1"), ]
+
+fam %>%
+    group_by(cluster) %>%
+    filter(p_val_adj <= 0.05) %>%
+    top_n(n = 50, wt = avg_log2FC) -> top20
+
+top20
+
+```
+
+```{r}
+gsvaViolinplot <- function(gsvaData, textsize, eset, title) {
+  gsvaResT <- data.frame(t(gsvaData))
+  condition <- 'Class'
+  cond <- apply(pData(cpm_eset)[, "Class",drop = FALSE],1, paste, collapse = "_")
+  gsvaResT[, paste(condition, collapse = "_")] <- cond
+  gsvaResFlat <- reshape2::melt(gsvaResT, id.vars = paste(condition,
+                                                          collapse = "_"),
+                                variable.name = "pathway")
+  ggplot2::ggplot(gsvaResFlat, ggplot2::aes_string(
+    x = paste(condition, collapse = "_"), y = "value",
+    color = paste(condition, collapse = "_"))) +
+    ggplot2::geom_boxplot() +
+  #   scale_color_npg(alpha = 0.8)+
+  # scale_fill_npg(alpha = 0.7)+
+  ggplot2::geom_jitter(size=0.3) +
+    ggplot2::facet_wrap(~pathway, scale = "free_y",
+                        ncol = ceiling(sqrt(nrow(gsvaData)))) +
+    ggpubr::stat_compare_means(method = "anova",  label = 'p.format')+
+    ggplot2::theme(strip.text.x = ggplot2::element_text(size = textsize))+
+    ggplot2::theme(axis.text.x = element_text(angle = 45, hjust = 1))+
+    labs(title = title, y = "GSVA Score", x = "Class")+
+    ggplot2::geom_hline(yintercept=0, linetype="dashed", color = "red")+
+    theme(axis.text = element_text(size = 10), axis.title = element_text(size = 10, face = "bold"))
+}
+
+```
+
+
+## GSVA on stress sigs
+
+```{r}
+gsva_boxplot <- function(df, group, nc, cls) {
+print(group)
+gsvaResT <- df[, colnames(df) %in% c(cls, paste(group))]
+condition <- group 
+cond <- as.list(gsvaResT[, condition ,drop = FALSE])
+gsvaResT[, paste(condition, collapse = "_")] <- cond
+gsvaResFlat <- reshape2::melt(gsvaResT, id.vars = paste(condition,
+                                                          collapse = "_"),
+                                variable.name = "pathway")
+gsvaResFlat$pathway <- factor(gsvaResFlat$pathway, levels = cls)
+g1 <-  ggplot2::ggplot(gsvaResFlat, ggplot2::aes_string(
+    x = "pathway", y = "value",
+    color = "pathway")) +
+    ggplot2::geom_boxplot(outlier.shape = NA) +
+    ggpubr::stat_compare_means(method = "anova",  label = 'p.format', vjust = 0.75)+
+    ggplot2::theme_bw()+
+    ggplot2::facet_wrap(as.formula(paste("~",group)), scales = "free_y", ncol = nc) +
+    ggplot2::theme(strip.text.x = ggplot2::element_text(size = 10))+
+    ggplot2::theme(axis.text.x = ggplot2::element_text(angle = 45, hjust = 1, size = 8))+
+    ggplot2::geom_hline(yintercept=0, linetype="dashed", color = "red")+
+    ggplot2::theme(legend.position="none")+
+    ggplot2::ylab("GSVA Score")
+g1
+}
+```
+
+
+```{r}
+gsva_res_bern <- data.frame(t(readRDS(file.path(PATH, "mmkhan_e7386/results/2023_07_24_choi_epi_bern_sigs.rds"))))
+
+gsva_res_bern$tissue.type <- choi_epi$tissue.type[match(rownames(gsva_res_bern), choi_epi$cell_id)]
+gsva_res_bern$seurat_clusters <- choi_epi$seurat_clusters[match(rownames(gsva_res_bern), choi_epi$cell_id)]
+```
+
+```{r fig.width=12, fig.height=12}
+gsva_boxplot(df=gsva_res_bern, group = "seurat_clusters",nc = 7, cls = c("Cell_Cycle",  "pEMT", "Epithelial_Differentiation_1", "Epithelial_Differentiation_2", "Stress", "Hypoxia", "seurat_clusters"))
+gsva_boxplot(df=gsva_res_bern, group = "tissue.type", nc = 4, cls = c("Cell_Cycle",  "pEMT", "Epithelial_Differentiation_1", "Epithelial_Differentiation_2", "Stress", "Hypoxia", "tissue.type"))
+```
+
+## GSVA on 4nqo sigs
+
+```{r}
+gsva_res <- data.frame(t(readRDS(file.path(PATH, "mmkhan_e7386/results/2023_07_24_choi_epi_4nqo_sigs.rds"))))
+
+gsva_res$nqo_diff_up_dn <- gsva_res$nqo.vs.ctrl.up - gsva_res$nqo.vs.ctrl.dn
+gsva_res$nqo_diff_dn_up <- gsva_res$nqo.vs.ctrl.dn - gsva_res$nqo.vs.ctrl.up
+gsva_res$e7386_25_diff <- gsva_res$e7386_25.vs.nqo.dn - gsva_res$e7386_25.vs.nqo.up
+gsva_res$e7386_50_diff <- gsva_res$e7386_50.vs.nqo.dn - gsva_res$e7386_50.vs.nqo.up
+
+gsva_res <- gsva_res[, c("nqo.vs.ctrl.up", "e7386_25.vs.nqo.up", "e7386_50.vs.nqo.up", "nqo.vs.ctrl.dn", "e7386_25.vs.nqo.dn", "e7386_50.vs.nqo.dn", "nqo_diff_up_dn", "nqo_diff_dn_up", "e7386_25_diff", "e7386_50_diff")]
+
+gsva_res$tissue.type <- choi_epi$tissue.type[match(rownames(gsva_res), choi_epi$cell_id)]
+gsva_res$seurat_clusters <- choi_epi$seurat_clusters[match(rownames(gsva_res), choi_epi$cell_id)]
+#gsva_res$ <- choi_epi$new_epi_sub[match(rownames(gsva_res), choi_epi$cell_id)]
+```
+
+All clusters
+
+```{r fig.width=12, fig.height=12}
+
+gsva_boxplot(df=gsva_res, group = "seurat_clusters",nc = 7, cls =  c("nqo.vs.ctrl.up", "e7386_25.vs.nqo.up", "e7386_50.vs.nqo.up", "nqo.vs.ctrl.dn", "e7386_25.vs.nqo.dn", "e7386_50.vs.nqo.dn", "nqo_diff_up_dn", "nqo_diff_dn_up", "e7386_25_diff", "e7386_50_diff"))
+gsva_boxplot(df=gsva_res, group = "tissue.type", nc = 4, cls = c("nqo.vs.ctrl.up", "e7386_25.vs.nqo.up", "e7386_50.vs.nqo.up", "nqo.vs.ctrl.dn", "e7386_25.vs.nqo.dn", "e7386_50.vs.nqo.dn", "nqo_diff_up_dn", "nqo_diff_dn_up", "e7386_25_diff", "e7386_50_diff"))
+
+```
+## Selected clusters {.tabset .tabset-fade .tabset-pills}
+
+### High stress
+
+```{r}
+gsva_res_bern_high <- gsva_res_bern %>% filter(seurat_clusters %in% c(7,8,9,10))
+gsva_boxplot(df=gsva_res_bern_high, group = "seurat_clusters", nc = 7, cls = c("Cell_Cycle",  "pEMT", "Epithelial_Differentiation_1", "Epithelial_Differentiation_2", "Stress", "Hypoxia", "seurat_clusters"))
+gsva_boxplot(df=gsva_res_bern_high, group = "seurat_clusters", nc = 7, cls = c("Stress", "seurat_clusters"))
+gsva_boxplot(df=gsva_res_bern_high, group = "tissue.type", nc = 7, cls = c("Stress"))
+
+gsva_res_high <- gsva_res %>% filter(seurat_clusters %in% c(7,8,9,10))
+
+gsva_boxplot(df=gsva_res_high, group = "seurat_clusters", nc = 7, cls =  c("nqo.vs.ctrl.up",   "e7386_25.vs.nqo.dn", "e7386_50.vs.nqo.dn", "nqo_diff_up_dn", "e7386_25_diff", "e7386_50_diff"))
+```
+
+```{r fig.width=12, fig.height=12}
+gsva_boxplot_nofw <- function(df, group, nc, cls) {
+print(group)
+gsvaResT <- df[, colnames(df) %in% c(cls, paste(group))]
+condition <- group 
+cond <- as.list(gsvaResT[, condition ,drop = FALSE])
+gsvaResT[, paste(condition, collapse = "_")] <- cond
+gsvaResFlat <- reshape2::melt(gsvaResT, id.vars = paste(condition,
+                                                          collapse = "_"),
+                                variable.name = "pathway")
+gsvaResFlat$pathway <- factor(gsvaResFlat$pathway, levels = cls)
+g1 <-  ggplot2::ggplot(gsvaResFlat, ggplot2::aes_string(
+    x = "pathway", y = "value",
+    color = "pathway")) +
+    ggplot2::geom_boxplot(outlier.shape = NA) +
+    ggpubr::stat_compare_means(method = "anova",  label = 'p.format', vjust = 0.75)+
+    ggplot2::theme_bw()+
+    ggplot2::facet_wrap(as.formula(paste("~",group)), scales = "free_y", ncol = nc) +
+    ggplot2::theme(strip.text.x = ggplot2::element_text(size = 10))+
+    ggplot2::theme(axis.text.x = ggplot2::element_text(angle = 45, hjust = 1, size = 8))+
+    ggplot2::geom_hline(yintercept=0, linetype="dashed", color = "red")+
+    ggplot2::theme(legend.position="none")+
+    ggplot2::ylab("GSVA Score")
+g1
+}
+
+gsva_boxplot_nofw(df=gsva_res_high, group = "tissue.type", nc = 7, cls =  c("nqo.vs.ctrl.up",   "e7386_25.vs.nqo.dn", "e7386_50.vs.nqo.dn", "nqo_diff_up_dn", "e7386_25_diff", "e7386_50_diff"))
+gsva_boxplot_nofw(df=gsva_res_high, group = "tissue.type", nc = 7, cls =  c( "e7386_25.vs.nqo.dn", "e7386_50.vs.nqo.dn", "Stress"))
+```
+
+
+
+### Low stress
+
+```{r fig.width=12, fig.height=12}
+gsva_res_bern_low <- gsva_res_bern %>% filter(seurat_clusters %in% c(4,5,11,12,13))
+gsva_boxplot(df=gsva_res_bern_low, group = "seurat_clusters",nc = 7, cls = c("Cell_Cycle",  "pEMT", "Epithelial_Differentiation_1", "Epithelial_Differentiation_2", "Stress", "Hypoxia", "seurat_clusters"))
+
+
+gsva_res_low <- gsva_res %>% filter(seurat_clusters %in% c(4,5,11,12,13))
+gsva_boxplot(df=gsva_res_low, group = "seurat_clusters",nc = 7, cls =  c("nqo.vs.ctrl.up",  "e7386_25.vs.nqo.dn", "e7386_50.vs.nqo.dn", "nqo_diff_up_dn", "e7386_25_diff", "e7386_50_diff"))
+```
+
+
+```{r fig.width=12, fig.height=12}
+gsva_boxplot(df=gsva_res, group = "seurat_clusters",nc = 7, cls =  c("nqo.vs.ctrl.up", "e7386_25.vs.nqo.dn", "e7386_50.vs.nqo.dn", "nqo_diff_up_dn", "e7386_25_diff", "e7386_50_diff"))
+gsva_boxplot(df=gsva_res, group = "tissue.type", nc = 4, cls = c("nqo.vs.ctrl.up", "e7386_25.vs.nqo.dn", "e7386_50.vs.nqo.dn", "nqo_diff_up_dn", "e7386_25_diff", "e7386_50_diff"))
+```
+## Clust 4/11 sigs from 4nqo
+
+```{r fig.width=12, fig.height=12}
+gsva_res_stress <- data.frame(t(readRDS(file.path(PATH, "mmkhan_e7386/results/2023_07_25_choi_epi_stress411_sigs.rds"))))
+gsva_res_stress$tissue.type <- choi_epi$tissue.type[match(rownames(gsva_res_stress), choi_epi$cell_id)]
+gsva_res_stress$seurat_clusters <- choi_epi$seurat_clusters[match(rownames(gsva_res_stress), choi_epi$cell_id)]
+
+gsva_boxplot(df=gsva_res_stress, group = "seurat_clusters",nc = 7, cls =  c("clust4_w11", "clust11_w4", "clust4_wo11", "clust11_wo4"))
+gsva_boxplot(df=gsva_res_stress, group = "tissue.type", nc = 4, cls =  c("clust4_w11", "clust11_w4","clust4_wo11", "clust11_wo4"))
+```
+
+## Stress and b-cat/cbp activity {.tabset .tabset-fade .tabset-pills}
+
+### Corr. heatmap
+
+```{r fig.width=8, fig.height=6}
+df_bern_nqo <- cbind(gsva_res, gsva_res_bern)
+df_bern_nqo <- df_bern_nqo[, !colnames(df_bern_nqo) %in% c('tissue.type', "seurat_clusters")]
+
+
+library(corrplot)
+mat1 <- as.matrix(df_bern_nqo[,c('Stress')])
+mat2 <- as.matrix(df_bern_nqo[,colnames(df_bern_nqo) %in% colnames(gsva_res)])
+
+colnames(mat1) <- c('Stress')
+cor_mat <- cor(mat1, mat2)
+
+corrplot::corrplot(corr = t(cor_mat), is.corr = T, method = "circle", addCoef.col ='black', col = COL1("YlOrRd"))
+```
+
+### Corr. scatter [Figure 4B]
+
+```{r fig.width=8, fig.height=6}
+scatter_wrap <- function (df, x, y, size) {
+  sp1 <- ggpubr::ggscatter(df, x = x, y = y, add = "reg.line", size = size,# Add regressin line
+   add.params = list(color = "red", fill = "lightgray"), # Customize reg. line
+   conf.int = TRUE # Add confidence interval
+)
+# Add correlation coefficient
+sp1 +  ggpubr::stat_cor(method = "pearson") 
+}
+
+corr_wrap <- function(df, x, y, names_x, names_y, type, diag) {
+  library(corrplot)
+  mat1 <- as.matrix(df[,x])
+  mat2 <- as.matrix(df[,y])
+
+  colnames(mat2) <- names_y
+  colnames(mat1) <- names_x
+  cor_mat <- cor(mat1, mat2)
+
+  corrplot::corrplot(corr = (cor_mat), is.corr = T, method = "circle", addCoef.col ='black', col = COL1("YlOrRd"), type = type, diag = diag)
+}
+
+s1 <- scatter_wrap(df = df_bern_nqo, x = "Stress", y = "e7386_25.vs.nqo.dn", size = 0.1)
+s2 <-scatter_wrap(df = df_bern_nqo, x = "Stress", y = "e7386_50.vs.nqo.dn", size = 0.1)
+
+s <- ggpubr::ggarrange(s1,s2, ncol = 2, nrow = 1)
+s
+
+#ggsave(plot = s, filename = file.path(PATH, "mmkhan_e7386/results/e7386_images/12_18_choi_stress_diffex.png"), width = 6, height = 3, dpi = 300)
+```
+
+
+
+```{r}
+gsva_res_df_choi <- data.frame((df_bern_nqo))
+gsva_res_df_choi$tissue <- choi_epi$tissue.type[match(colnames(choi_epi), rownames(gsva_res_df_choi))]
+gsva_res_df_choi$seurat_clusters <- choi_epi$seurat_clusters[match(colnames(choi_epi), rownames(gsva_res_df_choi))]
+```
+
+## Arrange the cells by the Stress GSVA scores {.tabset .tabset-fade .tabset-pills}
+
+![figure](/restricted/projectnb/montilab-p/projects/oralcancer/4nqo/mmkhan_e7386/results/e7386_images/08_07_heatmap_stress_gsva_choi.png)
+
+
+```{r eval=F}
+
+gsva_res_df_choi_stress <- gsva_res_df_choi[, c("Stress", "tissue", "seurat_clusters")]
+#gsva_res_df_stress %>% arrange(.by_group = "Stress")
+
+#gsva_res_df_stress[order(gsva_res_df_stress$Stress, decreasing = T), ]
+
+stress_mat_choi <- as.matrix(gsva_res_df_choi_stress$Stress)
+rownames(stress_mat_choi) <- rownames(gsva_res_df_choi_stress)
+colnames(stress_mat_choi) <- "Stress"
+
+# by seurat clusters
+top_ha <- HeatmapAnnotation(tissue = gsva_res_df_choi_stress$tissue,
+                            clusters = gsva_res_df_choi_stress$seurat_clusters,
+                            col = list(tissue = c("NL" = "white",
+                                                     "LP" = "pink",
+                                                     "CA" = "black")))
+
+png(filename = file.path(PATH, "mmkhan_e7386/results/e7386_images/08_07_heatmap_stress_gsva_choi.png"),   
+    width     = 20,
+    height    = 5,
+    units     = "in",
+    res       = 200,
+    pointsize = 4)
+ComplexHeatmap::Heatmap(t(stress_mat_choi), name = "GSVA",
+                        top_annotation = top_ha, show_row_names = F, 
+                        show_column_names = F,  
+                        clustering_distance_rows ="euclidean",
+                        clustering_method_rows="ward.D", 
+                        column_split=gsva_res_df_choi_stress$seurat_clusters)
+dev.off()
+```
+
+
+```{r}
+gsva_res_bern <- data.frame(t(readRDS(file.path(PATH, "mmkhan_e7386/results/2023_07_24_choi_epi_bern_sigs.rds"))))
+
+gsva_res_bern$tissue.type <- choi_epi$tissue.type[match(rownames(gsva_res_bern), choi_epi$cell_id)]
+gsva_res_bern$seurat_clusters <- choi_epi$seurat_clusters[match(rownames(gsva_res_bern), choi_epi$cell_id)]
+```
+
+## High Stress Clusters
+
+```{r}
+gsva_res_bern_mod <- gsva_res_bern
+gsva_res_bern_mod <- gsva_res_bern_mod[order(gsva_res_bern_mod$Stress),,drop=F]
+
+gsva_res_bern_mod$cell <- rownames(gsva_res_bern_mod)
+ggplot(data = gsva_res_bern_mod, aes(x=cell, y = Stress, col=tissue.type, fill=tissue.type)) +
+  geom_bar(stat = "identity") +
+  theme(axis.text.x = element_blank())
+
+
+
+gsva_res_high$Stress <- gsva_res_bern_mod$Stress[rownames(gsva_res_bern_mod) %in% rownames(gsva_res_high)]
+gsva_res_high$cell <- rownames(gsva_res_high)
+gsva_res_high_stress <- gsva_res_high[,c('Stress', 'tissue.type', "seurat_clusters", 'cell')]
+gsva_res_high_stress <- gsva_res_high_stress[order(gsva_res_high_stress$Stress),,drop=F]
+
+
+
+# ordered first
+ggplot(data = gsva_res_high_stress, aes(x=cell, y=Stress, col=tissue.type, fill=tissue.type)) +
+  geom_bar(stat = "identity") +
+  scale_fill_manual(values = c("#619CFF", "#00BA38", "#F8766D")) +
+  scale_color_manual(values = c("#619CFF", "#00BA38", "#F8766D")) +
+  theme(axis.text.x = element_blank())
+
+# reordered
+ggplot(data = gsva_res_high_stress, aes(reorder(cell, Stress), y = Stress, col=tissue.type, fill=tissue.type)) +
+  geom_bar(stat = "identity") +
+  scale_fill_manual(values = c("#619CFF", "#00BA38", "#F8766D")) +
+  scale_color_manual(values = c("#619CFF", "#00BA38", "#F8766D")) +
+  theme(axis.text.x = element_blank())
+
+# seurat clusters
+g <- ggplot(data = gsva_res_high_stress, aes(reorder(cell, Stress), y = Stress, col=tissue.type, fill=tissue.type)) +
+  geom_bar(stat = "identity") +
+  facet_wrap(~seurat_clusters, ncol = 4) +
+  scale_fill_manual(values = c("#619CFF", "#00BA38", "#F8766D")) +
+  scale_color_manual(values = c("#619CFF", "#00BA38", "#F8766D")) +
+  theme(axis.text.x = element_blank(), axis.title.x = element_blank())
+g
+#ggsave(plot = g, filename = file.path(PATH, "mmkhan_e7386/results/e7386_images/08_14_gsva_stress_high_clusts.png"), width = 4, height = 3, dpi = 200)
+
+# tissue type
+g <- ggplot(data = gsva_res_high, aes(x=cell, y = Stress, col=tissue.type, fill=tissue.type)) +
+  geom_bar(stat = "identity") +
+  facet_wrap(~seurat_clusters, ncol = 4) +
+  scale_fill_manual(values = c("#619CFF", "#00BA38", "#F8766D")) +
+  scale_color_manual(values = c("#619CFF", "#00BA38", "#F8766D")) +
+  theme(axis.text.x = element_blank(), axis.title.x = element_blank())
+g
+
+g <- ggplot(data = gsva_res_high, aes(reorder(cell, Stress), y=Stress, col=tissue.type, fill=tissue.type)) +
+  geom_bar(stat = "identity") +
+  facet_wrap(~seurat_clusters, ncol = 4) +
+  scale_fill_manual(values = c("#619CFF", "#00BA38", "#F8766D")) +
+  scale_color_manual(values = c("#619CFF", "#00BA38", "#F8766D")) +
+  theme(axis.text.x = element_blank(), axis.title.x = element_blank())
+g
+
+
+
+g <- ggplot(data = gsva_res_high, aes(reorder(cell, e7386_25.vs.nqo.dn), y = e7386_25.vs.nqo.dn, col=tissue.type, fill=tissue.type)) +
+  geom_bar(stat = "identity") +
+  facet_wrap(~seurat_clusters, ncol = 4) +
+  scale_fill_manual(values = c("#619CFF", "#00BA38", "#F8766D")) +
+  scale_color_manual(values = c("#619CFF", "#00BA38", "#F8766D")) +
+  theme(axis.text.x = element_blank(), axis.title.x = element_blank())+NoLegend()
+g
+#ggsave(plot = g, filename = file.path(PATH, "mmkhan_e7386/results/e7386_images/08_14_gsva_stress_high_clusts_e73_25_dn.png"), width = 4, height = 3, dpi = 200)
+
+g <- ggplot(data = gsva_res_high, aes(reorder(cell, e7386_50.vs.nqo.dn), y = e7386_50.vs.nqo.dn, col=tissue.type, fill=tissue.type)) +
+  geom_bar(stat = "identity") +
+  facet_wrap(~seurat_clusters, ncol = 4) +
+  scale_fill_manual(values = c("#619CFF", "#00BA38", "#F8766D")) +
+  scale_color_manual(values = c("#619CFF", "#00BA38", "#F8766D")) +
+  theme(axis.text.x = element_blank(), axis.title.x = element_blank())+NoLegend()
+g
+#ggsave(plot = g, filename = file.path(PATH, "mmkhan_e7386/results/e7386_images/08_14_gsva_stress_high_clusts_e73_50_dn.png"), width = 4, height = 3, dpi = 200)
+```
+```{r}
+gsva_res_high$Stress <- gsva_res_bern_mod$Stress[rownames(gsva_res_bern_mod) %in% rownames(gsva_res_high)]
+gsva_res_high_stress <- gsva_res_high[,c('Stress', 'tissue.type', "seurat_clusters", "cell")]
+
+
+# sel_order <- gsva_res_high_stress %>% 
+#   arrange(desc(Stress)) 
+# 
+# sel_order$cell <- factor(sel_order$cell)
+# 
+# ggplot(data = sel_order, aes(x = cell, y=Stress, col=tissue.type, fill=tissue.type)) +
+#   geom_bar(stat = "identity") +
+#   scale_fill_manual(values = c("black", "#00BA38", "#F8766D")) +
+#   scale_color_manual(values = c("black", "#00BA38", "#F8766D")) +
+#   theme(axis.text.x = element_blank())
+# 
+# gsva_res_high_stress$cell <- factor(gsva_res_high_stress$cell)
+# ggplot(data = gsva_res_high_stress, aes(x = cell, y=Stress, col=tissue.type, fill=tissue.type)) +
+#   geom_bar(stat = "identity") +
+#   scale_fill_manual(values = c("black", "#00BA38", "#F8766D")) +
+#   scale_color_manual(values = c("black", "#00BA38", "#F8766D")) +
+#   theme(axis.text.x = element_blank())
+
+
+data3 <- gsva_res_high                                              # Replicate original data
+data3$cell <- factor(data3$cell,                                    # Factor levels in decreasing order
+                  levels = data3$cell[order(data3$Stress, decreasing = F)])
+
+# by tissue type
+ggplot(data = data3, aes(x = cell, y=Stress, col=tissue.type, fill=tissue.type)) +
+  geom_bar(stat = "identity", width = 10e-10) +
+  scale_fill_manual(values = c("black", "#00BA38", "#F8766D")) +
+  scale_color_manual(values = c("black", "#00BA38", "#F8766D")) +
+  theme(axis.text.x = element_blank())
+
+
+ggplot(data = data3, aes(x = cell, y=e7386_25.vs.nqo.dn, col=tissue.type, fill=tissue.type)) +
+  geom_bar(stat = "identity", width = 10e-10) +
+  scale_fill_manual(values = c("black", "#00BA38", "#F8766D")) +
+  scale_color_manual(values = c("black", "#00BA38", "#F8766D")) +
+  theme(axis.text.x = element_blank())
+
+ggplot(data = data3, aes(x = cell, y=e7386_50.vs.nqo.dn, col=tissue.type, fill=tissue.type)) +
+  geom_bar(stat = "identity",  width = 10e-10) +
+  scale_fill_manual(values = c("black", "#00BA38", "#F8766D")) +
+  scale_color_manual(values = c("black", "#00BA38", "#F8766D")) +
+  theme(axis.text.x = element_blank())
+
+# facet by clusters
+
+g <- ggplot(data = data3, aes(x = cell, y=Stress, col=tissue.type, fill=tissue.type)) +
+  geom_bar(stat = "identity", width = 10e-10) +
+  scale_fill_manual(values = c("black", "#00BA38", "#F8766D")) +
+  scale_color_manual(values = c("black", "#00BA38", "#F8766D")) +
+    facet_wrap(~seurat_clusters, ncol = 4)+
+  theme(axis.text.x = element_blank()) + NoLegend()
+g
+#ggsave(plot = g, filename = file.path(PATH, "mmkhan_e7386/results/e7386_images/08_18_gsva_stress_high_clusts.png"), width = 4, height = 3, dpi = 200)
+
+g <- ggplot(data = data3, aes(x = cell, y=e7386_25.vs.nqo.dn, col=tissue.type, fill=tissue.type)) +
+  geom_bar(stat = "identity", width = 10e-10) +
+  scale_fill_manual(values = c("black", "#00BA38", "#F8766D")) +
+  scale_color_manual(values = c("black", "#00BA38", "#F8766D")) +
+  facet_wrap(~seurat_clusters,  ncol = 4)+
+  theme(axis.text.x = element_blank())+ NoLegend()
+g
+#ggsave(plot = g, filename = file.path(PATH, "mmkhan_e7386/results/e7386_images/08_18_gsva_stress_high_clusts_e73_25.png"), width = 4, height = 3, dpi = 200)
+
+g <- ggplot(data = data3, aes(x = cell, y=e7386_50.vs.nqo.dn, col=tissue.type, fill=tissue.type)) +
+  geom_bar(stat = "identity",  width = 10e-10) +
+    facet_wrap(~seurat_clusters,  ncol = 4)+
+  scale_fill_manual(values = c("black", "#00BA38", "#F8766D")) +
+  scale_color_manual(values = c("black", "#00BA38", "#F8766D")) +
+  theme(axis.text.x = element_blank())+ NoLegend()
+g
+#ggsave(plot = g, filename = file.path(PATH, "mmkhan_e7386/results/e7386_images/08_18_gsva_stress_high_clusts_e73_50.png"), width = 4, height = 3, dpi = 200)
+
+
+# correlation
+
+g <- ggplot(data = gsva_res_high, aes(y = e7386_25.vs.nqo.dn, x=Stress)) +
+  ggplot2::geom_point(aes(col=tissue.type, fill=tissue.type)) +
+  ggpubr::stat_cor(method = "pearson", cor.coef.name = c("R"), aes(label = ..r.label..))+
+  scale_fill_manual(values = c("black", "#00BA38", "#F8766D")) +
+  scale_color_manual(values = c("black", "#00BA38", "#F8766D")) +
+    facet_wrap(~seurat_clusters, ncol = 5)+ NoLegend()
+g
+#ggsave(plot = g, filename = file.path(PATH, "mmkhan_e7386/results/e7386_images/08_21_gsva_stress_high_clusts_stress_e73_25.png"), width = 8, height = 3, dpi = 200)
+
+g <- ggplot(data = gsva_res_high, aes(y = e7386_50.vs.nqo.dn,x=Stress)) +
+  ggplot2::geom_point(aes(col=tissue.type, fill=tissue.type)) +
+  ggpubr::stat_cor(method = "pearson", cor.coef.name = c("R"), aes(label = ..r.label..))+
+  scale_fill_manual(values = c("black", "#00BA38", "#F8766D")) +
+  scale_color_manual(values = c("black", "#00BA38", "#F8766D")) +
+    facet_wrap(~seurat_clusters, ncol = 5)+ NoLegend()
+g
+#ggsave(plot = g, filename = file.path(PATH, "mmkhan_e7386/results/e7386_images/08_21_gsva_stress_high_clusts_stress_e73_50.png"), width = 8, height = 3, dpi = 200)
+
+```
+```{r}
+gsva_res_high_ca <- gsva_res_high %>% filter(tissue.type=="CA")
+gsva_res_high_lp <- gsva_res_high %>% filter(tissue.type=="LP")
+gsva_res_high_nl <- gsva_res_high %>% filter(tissue.type=="NL")
+
+
+table(gsva_res_high_ca$Stress > 0 & gsva_res_high_ca$e7386_25.vs.nqo.dn > 0)
+table(gsva_res_high_ca$Stress > 0 & gsva_res_high_ca$e7386_25.vs.nqo.dn > 0)
+
+table(gsva_res_high_lp$Stress > 0 & gsva_res_high_lp$e7386_25.vs.nqo.dn > 0)
+table(gsva_res_high_lp$Stress > 0 & gsva_res_high_lp$e7386_25.vs.nqo.dn > 0)
+
+
+table(gsva_res_high_nl$Stress > 0 & gsva_res_high_nl$e7386_25.vs.nqo.dn > 0)
+table(gsva_res_high_nl$Stress > 0 & gsva_res_high_nl$e7386_50.vs.nqo.dn > 0)
+```
+
+
+
+
+## Low Stress Clusters
+
+```{r}
+gsva_res_low$Stress <- gsva_res_bern$Stress[rownames(gsva_res_bern_mod) %in% rownames(gsva_res_low)]
+gsva_res_low$cell <- rownames(gsva_res_low)
+
+data3 <- gsva_res_low                                                 # Replicate original data
+data3$cell <- factor(data3$cell,                                    # Factor levels in decreasing order
+                  levels = data3$cell[order(data3$Stress, decreasing = F)])
+
+
+# facet by clusters
+
+g <- ggplot(data = data3, aes(x = cell, y=Stress, col=tissue.type, fill=tissue.type)) +
+  geom_bar(stat = "identity", width = 10e-10) +
+  scale_fill_manual(values = c("black", "#00BA38", "#F8766D")) +
+  scale_color_manual(values = c("black", "#00BA38", "#F8766D")) +
+    facet_wrap(~seurat_clusters, ncol = 5)+
+  theme(axis.text.x = element_blank()) + NoLegend()
+g
+#ggsave(plot = g, filename = file.path(PATH, "mmkhan_e7386/results/e7386_images/08_18_gsva_stress_low_clusts.png"), width = 5, height = 3, dpi = 200)
+
+g <- ggplot(data = data3, aes(x = cell, y=e7386_25.vs.nqo.dn, col=tissue.type, fill=tissue.type)) +
+  geom_bar(stat = "identity", width = 10e-10) +
+  scale_fill_manual(values = c("black", "#00BA38", "#F8766D")) +
+  scale_color_manual(values = c("black", "#00BA38", "#F8766D")) +
+  facet_wrap(~seurat_clusters,  ncol = 5)+
+  theme(axis.text.x = element_blank())+ NoLegend()
+g
+#ggsave(plot = g, filename = file.path(PATH, "mmkhan_e7386/results/e7386_images/08_18_gsva_stress_low_clusts_e73_25.png"), width = 5, height = 3, dpi = 200)
+
+g <- ggplot(data = data3, aes(x = cell, y=e7386_50.vs.nqo.dn, col=tissue.type, fill=tissue.type)) +
+  geom_bar(stat = "identity",  width = 10e-10) +
+    facet_wrap(~seurat_clusters,  ncol = 5)+
+  scale_fill_manual(values = c("black", "#00BA38", "#F8766D")) +
+  scale_color_manual(values = c("black", "#00BA38", "#F8766D")) +
+  theme(axis.text.x = element_blank())+ NoLegend()
+g
+#ggsave(plot = g, filename = file.path(PATH, "mmkhan_e7386/results/e7386_images/08_18_gsva_stress_low_clusts_e73_50.png"), width = 5, height = 3, dpi = 200)
+
+
+## correlation
+g <- ggplot(data = gsva_res_low, aes(y = e7386_25.vs.nqo.dn, x=Stress)) +
+  ggplot2::geom_point(aes(col=tissue.type, fill=tissue.type)) +
+    ggpubr::stat_cor(method = "pearson", cor.coef.name = c("R"), aes(label = ..r.label..))+
+  scale_fill_manual(values = c("black", "#00BA38", "#F8766D")) +
+  scale_color_manual(values = c("black", "#00BA38", "#F8766D")) +
+    facet_wrap(~seurat_clusters, ncol = 5)+ NoLegend()
+#ggsave(plot = g, filename = file.path(PATH, "mmkhan_e7386/results/e7386_images/08_21_gsva_stress_low_clusts_stress_e73_25.png"), width = 10, height = 3, dpi = 200)
+g <- ggplot(data = gsva_res_low, aes(y = e7386_50.vs.nqo.dn,x=Stress)) +
+  ggplot2::geom_point(aes(col=tissue.type, fill=tissue.type)) +
+   ggpubr::stat_cor(method = "pearson", cor.coef.name = c("R"), aes(label = ..r.label..))+
+  scale_fill_manual(values = c("black", "#00BA38", "#F8766D")) +
+  scale_color_manual(values = c("black", "#00BA38", "#F8766D")) +
+    facet_wrap(~seurat_clusters, ncol = 5)+ NoLegend()
+g
+#ggsave(plot = g, filename = file.path(PATH, "mmkhan_e7386/results/e7386_images/08_21_gsva_stress_low_clusts_stress_e73_50.png"), width = 10, height = 3, dpi = 200)
+
+
+
+sp1 <-  ggpubr::ggscatter(data =gsva_res_low, y = "e7386_25.vs.nqo.dn", x="Stress", add = "reg.line", size = 0.25,
+                          add.params = list(color = "blue", fill = "lightgray"), 
+                          conf.int = TRUE, fill = "tissue.type", color = "tissue.type")+
+  scale_fill_manual(values = c("black", "#00BA38", "#F8766D")) +
+  scale_color_manual(values = c("black", "#00BA38", "#F8766D"))+
+  ggpubr::stat_cor(method = "pearson") +
+  facet_wrap(~seurat_clusters, ncol = 5)
+sp1
+
+
+sp1 <-  ggpubr::ggscatter(data =gsva_res_low, y = "e7386_50.vs.nqo.dn", x="Stress", add = "reg.line", size = 0.25,
+                          add.params = list(color = "blue", fill = "lightgray"), 
+                          conf.int = TRUE, fill = "tissue.type", color = "tissue.type")+
+  scale_fill_manual(values = c("black", "#00BA38", "#F8766D")) +
+  scale_color_manual(values = c("black", "#00BA38", "#F8766D"))+
+  ggpubr::stat_cor(method = "pearson") +
+  facet_wrap(~seurat_clusters, ncol = 5)
+sp1
+
+
+
+```
+
+## Correlation plots
+
+```{r}
+g <- ggplot(data = data3, aes(x = e7386_25.vs.nqo.dn, y=Stress, col=tissue.type, fill=tissue.type)) +
+  ggplot2::geom_point() +
+  ggpubr::stat_cor(method = "pearson", cor.coef.name = c("R"))+
+  scale_fill_manual(values = c("black", "#00BA38", "#F8766D")) +
+  scale_color_manual(values = c("black", "#00BA38", "#F8766D")) +
+    facet_wrap(~seurat_clusters, ncol = 5)+
+  theme(axis.text.x = element_blank()) + NoLegend()
+g
+```
+
+
+## Leading edge analysis {.tabset .tabset-fade .tabset-pills}
+
+main body - GE of maybe top 2000 genes
+GSVA scores on top arranged by decreasing order for each cell
+annotation on top - treatment 1st and then maybe seurat clusters
+ann on right - correlation bar plot with names of only stress genes or color by 'stress' or not
+
+### Heatmap on high stress clusters 
+
+![figure](/restricted/projectnb/montilab-p/projects/oralcancer/4nqo/mmkhan_e7386/results/e7386_images/08_14_heatmap_stress_gsva_choi_high_st.png){#id .class width=500 height=500px}
+```{r eval=F}
+`%ni%` <- Negate(`%in%`)
+
+gsva_res_bern_high <- gsva_res_bern_high[order(gsva_res_bern_high$Stress, decreasing = T),,drop=FALSE]
+
+choi_top_2k <- as.matrix(choi_epi@assays$SCT@data[choi_epi@assays$SCT@var.features[1:500], rownames(gsva_res_bern_high)])
+
+# corr
+choi_cor <- data.frame(cor(x = t(choi_top_2k), y = gsva_res_bern_high$Stress))
+colnames(choi_cor) <- 'cor_stress'
+
+choi_cor_mod <- data.frame(cor_stress=choi_cor[order(choi_cor$cor_stress, decreasing = T),,drop=FALSE])
+
+# by seurat clusters
+top_ha <- HeatmapAnnotation(tissue = gsva_res_bern_high$tissue, 
+                            Stress = anno_barplot(x = gsva_res_bern_high$Stress, beside = T, which = "column"),
+                            #clusters = gsva_res_bern$seurat_clusters,
+                            col = list(tissue = c("NL" = "black",
+                                                     "LP" = "#00BA38",
+                                                     "CA" = "#F8766D")))
+
+# arrange rows by corr values
+choi_top_2k_mod <- choi_top_2k[rownames(choi_cor_mod), ]
+stress_genes <- c("JUN", "FOS", "FOSB", "JUNB", "FOSL1")
+
+selected1 = which(rownames(choi_top_2k_mod) %in% stress_genes)
+selected2 = which(rownames(choi_top_2k_mod) %ni% stress_genes)
+
+
+png(filename = file.path(PATH, "mmkhan_e7386/results/e7386_images/08_14_heatmap_stress_gsva_choi_high_st.png"),
+width     = 10,
+height    = 25,
+units     = "in",
+res       = 200,
+pointsize = 4)
+#top_bar_anno <- (t(gsva_res_bern %>% select('Stress')))
+ComplexHeatmap::Heatmap((choi_top_2k_mod), name = "GSVA",
+                        top_annotation = top_ha, 
+                        show_column_names = F,  
+                        cluster_columns = F, 
+                        # clustering_distance_columns  ="euclidean",
+                        # clustering_method_columns="ward.D",
+                        cluster_rows = F) +
+ rowAnnotation(link1 = anno_mark(at = selected1, 
+                                link_width = unit(0, "mm"),
+                                link_gp = gpar(lwd=0.1),
+                                padding = unit(0, "mm"),
+                                labels = rownames((choi_top_2k_mod))[selected1], side = "left",
+                                labels_gp = gpar(fontsize = 3, 
+                                                 fontface = "bold",
+                                                 col = "red"
+                                                 ))) +
+   rowAnnotation(link2 = anno_mark(at = selected2, 
+                                link_width = unit(0, "mm"),
+                                link_gp = gpar(lwd=0.1),
+                                padding = unit(0, "mm"),
+                                labels = rownames((choi_top_2k_mod))[selected2], side = "left",
+                                labels_gp = gpar(fontsize = 3, 
+                                                 fontface = "bold",
+                                                 col = "black"
+                                                 ))) +
+  rowAnnotation(corr = anno_barplot(x = choi_cor_mod$cor_stress))
+
+dev.off()
+```
+
+
+### Heatmap on all cells, top 500
+
+![figure](/restricted/projectnb/montilab-p/projects/oralcancer/4nqo/mmkhan_e7386/results/e7386_images/08_18_heatmap_stress_gsva_choi_new_big.png){#id .class width=500 height=1500px}
+
+```{r eval=F}
+gsva_res_bern <- gsva_res_bern[order(gsva_res_bern$Stress, decreasing = T),,drop=FALSE]
+
+choi_top_2k <- as.matrix(choi_epi@assays$SCT@data[choi_epi@assays$SCT@var.features[1:500], rownames(gsva_res_bern)])
+
+# corr
+choi_cor <- data.frame(cor(x = t(choi_top_2k), y = gsva_res_bern$Stress))
+colnames(choi_cor) <- 'cor_stress'
+
+choi_cor_mod <- data.frame(cor_stress=choi_cor[order(choi_cor$cor_stress, decreasing = T),,drop=FALSE])
+
+# by seurat clusters
+top_ha <- HeatmapAnnotation(tissue = gsva_res_bern$tissue, 
+                            Stress = anno_barplot(x = gsva_res_bern$Stress, beside = T, which = "column"),
+                            clusters = gsva_res_bern$seurat_clusters,
+                            col = list(tissue = c("NL" = "black",
+                                                  "LP" = "#00BA38",
+                                                  "CA" = "#F8766D"),
+                                       clusters = c("1"="grey",
+                                                    "2"="grey",
+                                                    "3"="grey",
+                                                    "4"="grey",
+                                                    "5"="grey",
+                                                    "6"="grey",
+                                                    "7"="red",
+                                                    "8"="green",
+                                                    "9"="yellow",
+                                                    "10"="black",
+                                                    "11"="grey",
+                                                    "12"="grey",
+                                                    "13"="grey",
+                                                    "14"="grey")))
+
+# arrange rows by corr values
+choi_top_2k_mod <- choi_top_2k[rownames(choi_cor_mod), ]
+stress_genes <- c("JUN", "FOS", "FOSB", "JUNB")
+
+selected1 = which(rownames(choi_top_2k_mod) %in% stress_genes)
+selected2 = which(rownames(choi_top_2k_mod) %ni% stress_genes)
+
+choi_top_2k_mod_scaled <- t(scale(t(choi_top_2k_mod)))
+
+png(filename = file.path(PATH, "mmkhan_e7386/results/e7386_images/08_18_heatmap_stress_gsva_choi_new_big.png"),
+width     = 10,
+height    = 20,
+units     = "in",
+res       = 400,
+pointsize = 10)
+#top_bar_anno <- (t(gsva_res_bern %>% select('Stress')))
+ComplexHeatmap::Heatmap((choi_top_2k_mod_scaled), name = "GE",
+                        top_annotation = top_ha, 
+                        show_column_names = F,  
+                        cluster_columns = F, 
+                        # clustering_distance_columns  ="euclidean",
+                        # clustering_method_columns="ward.D",
+                        cluster_rows = F) +
+ rowAnnotation(link1 = anno_mark(at = selected1, 
+                                link_width = unit(0, "mm"),
+                                link_gp = gpar(lwd=0.1),
+                                padding = unit(0, "mm"),
+                                labels = rownames((choi_top_2k_mod))[selected1], side = "left",
+                                labels_gp = gpar(fontsize = 3, 
+                                                 fontface = "bold",
+                                                 col = "red"
+                                                 ))) +
+   rowAnnotation(link2 = anno_mark(at = selected2, 
+                                link_width = unit(0, "mm"),
+                                link_gp = gpar(lwd=0.1),
+                                padding = unit(0, "mm"),
+                                labels = rownames((choi_top_2k_mod))[selected2], side = "left",
+                                labels_gp = gpar(fontsize = 3, 
+                                                 fontface = "bold",
+                                                 col = "black"
+                                                 ))) +
+  rowAnnotation(corr = anno_barplot(x = choi_cor_mod$cor_stress))
+dev.off()
+
+```
+
+
+### Heatmap on all cells, top 50
+
+![figure](/restricted/projectnb/montilab-p/projects/oralcancer/4nqo/mmkhan_e7386/results/e7386_images/08_18_heatmap_stress_gsva_choi_new_small.png){#id .class width=500 height=500px}
+
+```{r eval=F}
+gsva_res_bern <- gsva_res_bern[order(gsva_res_bern$Stress, decreasing = T),,drop=FALSE]
+
+choi_top_2k <- as.matrix(choi_epi@assays$SCT@data[choi_epi@assays$SCT@var.features[1:500], rownames(gsva_res_bern)])
+
+# corr
+choi_cor <- data.frame(cor(x = t(choi_top_2k), y = gsva_res_bern$Stress))
+colnames(choi_cor) <- 'cor_stress'
+
+choi_cor_mod <- data.frame(cor_stress=choi_cor[order(choi_cor$cor_stress, decreasing = T),,drop=FALSE])
+
+choi_cor_mod_small <- choi_cor_mod[1:50,, drop=F]
+
+# by seurat clusters
+top_ha <- HeatmapAnnotation(tissue = gsva_res_bern$tissue, 
+                            Stress = anno_barplot(x = gsva_res_bern$Stress, beside = T, which = "column"),
+                            clusters = gsva_res_bern$seurat_clusters,
+                            col = list(tissue = c("NL" = "black",
+                                                  "LP" = "#00BA38",
+                                                  "CA" = "#F8766D"),
+                                       clusters = c("1"="grey",
+                                                    "2"="grey",
+                                                    "3"="grey",
+                                                    "4"="grey",
+                                                    "5"="grey",
+                                                    "6"="grey",
+                                                    "7"="red",
+                                                    "8"="green",
+                                                    "9"="yellow",
+                                                    "10"="black",
+                                                    "11"="grey",
+                                                    "12"="grey",
+                                                    "13"="grey",
+                                                    "14"="grey")))
+
+# arrange rows by corr values
+choi_top_2k_mod <- choi_top_2k[rownames(choi_cor_mod_small), ]
+stress_genes <- c("JUN", "FOS", "FOSB", "JUNB")
+
+selected1 = which(rownames(choi_top_2k_mod) %in% stress_genes)
+selected2 = which(rownames(choi_top_2k_mod) %ni% stress_genes)
+
+choi_top_2k_mod_scaled <- t(scale(t(choi_top_2k_mod)))
+png(filename = file.path(PATH, "mmkhan_e7386/results/e7386_images/08_18_heatmap_stress_gsva_choi_new_small.png"),
+width     = 10,
+height    = 10,
+units     = "in",
+res       = 400,
+pointsize = 10)
+#top_bar_anno <- (t(gsva_res_bern %>% select('Stress')))
+ComplexHeatmap::Heatmap((choi_top_2k_mod_scaled), name = "GE",
+                        top_annotation = top_ha, 
+                        show_column_names = F,  
+                        cluster_columns = F, 
+                        # clustering_distance_columns  ="euclidean",
+                        # clustering_method_columns="ward.D",
+                        cluster_rows = F) +
+ rowAnnotation(link1 = anno_mark(at = selected1, 
+                                link_width = unit(0, "mm"),
+                                link_gp = gpar(lwd=0.1),
+                                padding = unit(0, "mm"),
+                                labels = rownames((choi_top_2k_mod))[selected1], side = "left",
+                                labels_gp = gpar(fontsize = 8, 
+                                                 fontface = "bold",
+                                                 col = "red"
+                                                 ))) +
+   rowAnnotation(link2 = anno_mark(at = selected2, 
+                                link_width = unit(0, "mm"),
+                                link_gp = gpar(lwd=0.1),
+                                padding = unit(0, "mm"),
+                                labels = rownames((choi_top_2k_mod))[selected2], side = "left",
+                                labels_gp = gpar(fontsize = 8, 
+                                                 fontface = "bold",
+                                                 col = "black"
+                                                 ))) +
+  rowAnnotation(corr = anno_barplot(x = choi_cor_mod_small$cor_stress))
+dev.off()
+
+data.frame(noquote(rownames(choi_top_2k_mod_scaled)))
+```
+
+## Regression on stress and b-cat/cbp activity {.tabset .tabset-fade .tabset-pills}
+
+```{r}
+gsva_res_final <- gsva_res
+gsva_res_final$stress <- gsva_res_bern$Stress[match(rownames(gsva_res_final), rownames(gsva_res_bern))]
+gsva_res_final$group <- ifelse(gsva_res_final$seurat_clusters %in% c(7,8,9,10), "high", "low")
+
+gsva_res_final_sub <- gsva_res_final[gsva_res_final$seurat_clusters %in% c(4,5,11,12,13,7,8,9,10), ]
+gsva_res_final_sub$group <- factor(gsva_res_final_sub$group, levels = c("low", "high"))
+
+lm1 <- (lm(data = gsva_res_final_sub, formula = (stress ~ e7386_25.vs.nqo.dn + group)))
+lm2 <- (lm(data = gsva_res_final_sub, formula = (stress ~ e7386_50.vs.nqo.dn + group)))
+
+# interaction
+lm3 <- (lm(data = gsva_res_final_sub, formula = (stress ~ e7386_25.vs.nqo.dn + group + e7386_25.vs.nqo.dn*group)))
+lm4 <- (lm(data = gsva_res_final_sub, formula = (stress ~ e7386_50.vs.nqo.dn + group + e7386_50.vs.nqo.dn*group)))
+
+summary(lm1)
+
+library(gtsummary)
+t1 <- tbl_regression(lm1)
+t2 <- tbl_regression(lm2)
+t3 <- tbl_regression(lm3)
+t4 <- tbl_regression(lm4) 
+tbl_merge(list(t1,t2), 
+          tab_spanner = c("E7386@25 dn", "E7386@50 dn"))
+
+tbl_merge(list(t3,t4), tab_spanner = c("E7386@25_dn*group", "E7386@50_dn*group"))
+
+tbl_stack(list(t1,t2,t3,t4), group_header = c("E7386@25 dn", "E7386@50 dn", "E7386@25_dn*group", "E7386@50_dn*group")) %>% as_gt()
+```
+
+
+

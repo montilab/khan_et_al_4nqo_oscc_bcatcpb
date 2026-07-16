@@ -1,0 +1,207 @@
+---
+title: "Connectivity Map Querying"
+subtitle: "ICG-001 and E7386 signatures"
+author: "Stefano Monti"
+output:
+  html_document:
+    theme: united
+    code_folding: show
+    css: style.css
+    toc: yes
+---
+
+```{r global, echo=FALSE}
+knitr::opts_chunk$set(message=FALSE, warning=FALSE,fig.path='../results/figures/')
+```
+
+In this document, we (re)derive the ICG-001 signatures. Furthermore, we aim to reconcile the results with the legacy results published in the Genome Medicine paper. This is just an "excerpt" from the original file (w/o the '.updated' suffix).
+
+```{r settings}
+library(OmicSignature)
+
+PATH <- file.path(Sys.getenv("MLAB"),"projects/oralcancer/bcat_cbp_inhibition/4nqo/smonti")
+SPATH <- file.path(Sys.getenv("MLAB"), "projects/sigRepo")
+options(box.path = file.path(Sys.getenv("CBMGIT"), "MLscripts"))
+box::use(R/MLmisc)
+
+## control variables
+do_save <- TRUE
+```
+
+# Load the data
+```{r load.data}
+## see the legacy file signature.icg001_hnsc.Rmd for the derivation of these data
+icg001_hsc3 <- readRDS(file = file.path(SPATH, "archive/results/icg001_hsc3_hnsc_diffanal.RDS")) |>
+  dplyr::rename(p_value = "p")
+icg001_cal27 <- readRDS(file = file.path(SPATH, "archive/results/icg001_cal27_hnsc_diffanal.RDS")) |>
+  dplyr::rename(p_value = "p")
+e7386_hsc3 <- readRDS(file = file.path(SPATH, "archive/results/e7386_hsc3_hnsc_diffanal.RDS")) |>
+  dplyr::rename(p_value = "p")
+e7386_cal27 <- readRDS(file = file.path(SPATH, "archive/results/e7386_cal27_hnsc_diffanal.RDS")) |>
+  dplyr::rename(p_value = "p")
+```
+
+```{r check}
+icg001_sigs <- readRDS(file.path(SPATH, "archive/results/icg001_hnsc_signatures.RDS"))
+e7386_sigs <- readRDS(file.path(SPATH, "archive/results/e7386_hnsc_signatures.RDS"))
+data.frame(e7386 = lengths(e7386_sigs), 
+           icg001 = lengths(icg001_sigs))
+```
+
+# Define Relevant Differential Signatures {.tabset}
+
+```{r icg001.signatures}
+icg001_hsc3_flt <- tidyr::drop_na(icg001_hsc3, FDR.q.filtered, fold.change, Symbol)
+icg001_cal27_flt <- tidyr::drop_na(icg001_cal27, FDR.q.filtered, fold.change, Symbol)
+e7386_hsc3_flt <- tidyr::drop_na(e7386_hsc3, FDR.q.filtered, fold.change, Symbol)
+e7386_cal27_flt <- tidyr::drop_na(e7386_cal27, FDR.q.filtered, fold.change, Symbol)
+
+maxQ <- 0.01
+minFC <- 1.5
+```
+
+## ICG-001
+For consistency with past results, we use the signatures derived based on rounded values.
+```{r icg001.signatures}
+icg001sigRound <- list(
+  hsc3.up = icg001_hsc3_flt |>
+    dplyr::filter(signif(FDR.q.filtered, 2) <= maxQ, round(fold.change, 1) >= +minFC) |>
+    dplyr::pull(Symbol),
+  hsc3.dn = icg001_hsc3_flt |>
+    dplyr::filter(signif(FDR.q.filtered, 2) <= maxQ, round(fold.change, 1) <= -minFC) |>
+    dplyr::pull(Symbol),
+  cal27.up = icg001_cal27_flt |>
+    dplyr::filter(signif(FDR.q.filtered, 2) <= maxQ, round(fold.change, 1) >= +minFC) |>
+    dplyr::pull(Symbol),
+  cal27.dn = icg001_cal27_flt |>
+    dplyr::filter(signif(FDR.q.filtered, 2) <= maxQ, round(fold.change, 1) <= -minFC) |>
+    dplyr::pull(Symbol)
+)
+icg001sigRound <- c(
+  icg001sigRound,
+  list(comb.up=intersect(icg001sigRound$hsc3.up,icg001sigRound$cal27.up),
+       comb.dn=intersect(icg001sigRound$hsc3.dn,icg001sigRound$cal27.dn))
+)
+names(icg001sigRound) <- paste("icg001",names(icg001sigRound),sep=".")
+```
+
+## E7386
+```{r e7386.signatures}
+e7386sigRound <- list(
+  hsc3.up = e7386_hsc3_flt |>
+    dplyr::filter(signif(FDR.q.filtered, 2) <= maxQ, round(fold.change, 1) >= +minFC) |>
+    dplyr::pull(Symbol),
+  hsc3.dn = e7386_hsc3_flt |>
+    dplyr::filter(signif(FDR.q.filtered, 2) <= maxQ, round(fold.change, 1) <= -minFC) |>
+    dplyr::pull(Symbol),
+  cal27.up = e7386_cal27_flt |>
+    dplyr::filter(signif(FDR.q.filtered, 2) <= maxQ, round(fold.change, 1) >= +minFC) |>
+    dplyr::pull(Symbol),
+  cal27.dn = e7386_cal27_flt |>
+    dplyr::filter(signif(FDR.q.filtered, 2) <= maxQ, round(fold.change, 1) <= -minFC) |>
+    dplyr::pull(Symbol)
+)
+e7386sigRound <- c(
+  e7386sigRound,
+  list(comb.up=intersect(e7386sigRound$hsc3.up,e7386sigRound$cal27.up),
+       comb.dn=intersect(e7386sigRound$hsc3.dn,e7386sigRound$cal27.dn))
+)
+names(e7386sigRound) <- paste("e7386",names(e7386sigRound),sep=".")
+```
+
+# {-}
+
+```{r}
+data.frame(
+  e7386 = lengths(e7386sigRound),
+  icg001 = lengths(icg001sigRound)
+)
+```
+
+# CMap Query
+```{r} 
+e7386_cmap_query <- e7386sigRound[grep("hsc3", names(e7386sigRound))]
+icg001_cmap_query <- icg001sigRound[grep("hsc3", names(icg001sigRound))]
+
+e7386_cmap_query_flt <- lapply(
+  e7386_cmap_query,
+  \(x) x[!grepl("\\bLOC", x, perl = TRUE)]
+)
+icg001_cmap_query_flt <- lapply(
+  icg001_cmap_query,
+  \(x) x[!grepl("\\bLOC", x, perl = TRUE)]
+)
+data.frame(
+  unfiltered = lengths(c(e7386_cmap_query, icg001_cmap_query)),
+  filtered = lengths(c(e7386_cmap_query_flt, icg001_cmap_query_flt))
+)
+cmap_query_df <- list(
+  E7386_UP = e7386_cmap_query_flt$e7386.hsc3.up,
+  E7386_DN = e7386_cmap_query_flt$e7386.hsc3.dn,
+  ICG_001_UP = icg001_cmap_query_flt$icg001.hsc3.up,
+  ICG_001_DN = icg001_cmap_query_flt$icg001.hsc3.dn
+) |> MLmisc$list2DF()
+```
+
+## API call
+```{r eval=FALSE, echo=FALSE}
+## THIS DOESN'T WORK
+cmap_api_key <- Sys.getenv("CLUE_API_KEY")
+if (!nzchar(cmap_api_key)) {
+  cmap_api_key <- Sys.getenv("CMAP_API_KEY")
+}
+if (!nzchar(cmap_api_key)) {
+  stop("Set CLUE_API_KEY (or CMAP_API_KEY) to your clue.io API key before submitting CMap queries.")
+}
+
+cmap_api_url <- Sys.getenv("CLUE_API_URL", unset = "https://api.clue.io/api/jobs")
+
+as_cmap_gmt <- function(query, direction) {
+  genes <- query[grep(paste0("\\.", direction, "$"), names(query))][[1]]
+  paste(c("TAG", "", unique(stats::na.omit(genes))), collapse = "\t")
+}
+
+submit_cmap_query <- function(query, name) {
+  body <- list(
+    tool_id = "sig_gutc_tool",
+    data_type = "L1000",
+    name = name,
+    dataset = "Touchstone",
+    ignoreWarnings = TRUE,
+    "uptag-cmapfile" = as_cmap_gmt(query, "up"),
+    "dntag-cmapfile" = as_cmap_gmt(query, "dn")
+  )
+
+  response <- httr::POST(
+    url = cmap_api_url,
+    httr::add_headers(user_key = cmap_api_key, Accept = "application/json"),
+    httr::content_type_json(),
+    body = body,
+    encode = "json"
+  )
+  httr::stop_for_status(response)
+  httr::content(response, as = "parsed", type = "application/json")
+}
+
+# submit E7386 query through the CMap API
+e7386_cmap_query_res <- submit_cmap_query(
+  query = e7386_cmap_query,
+  name = "E7386 HSC3 signature"
+)
+
+# submit ICG001 query through the CMap API
+icg001_cmap_query_res <- submit_cmap_query(
+  query = icg001_cmap_query,
+  name = "ICG001 HSC3 signature"
+)
+```
+
+
+# Save
+```{r save, echo=do_save, eval=do_save}
+saveRDS(e7386_cmap_query_flt, file =
+          file.path(PATH, "workdir/e7386_cmap_query.Rds"))
+saveRDS(icg001_cmap_query_flt,
+        file.path(PATH, "workdir/icg001_cmap_query.Rds"))
+openxlsx::write.xlsx(cmap_query_df, file = file.path(PATH, "results/bcat_cbp_cmap_query.xlsx"))
+```

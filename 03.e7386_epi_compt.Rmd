@@ -1,0 +1,1693 @@
+---
+title: "E7386 Epi Compt"
+author: "M. Muzamil Khan"
+date: '2023-01-08'
+output:
+  html_document:
+    code_folding: hide
+    theme: flatly
+    toc: yes
+    toc_float: true
+  html_notebook:
+    code_folding: hide
+    theme: flatly
+    toc: yes
+    toc_float: true
+  pdf_document:
+    toc: yes
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+#.libPaths("/restricted/projectnb/montilab-p/personal/mmkhan/R/4.1/")
+
+```
+
+```{r}
+PATH <- "/restricted/projectnb/montilab-p/projects/oralcancer/4nqo/"
+FIGURES <- '/restricted/projectnb/montilab-p/projects/oralcancer/4nqo/results/bsanjana_figures'
+
+library(Seurat)
+library(dplyr)
+library(ggplot2)
+library(K2Taxonomer)
+library(ComplexHeatmap)
+library(parallel)
+library(ggrastr)
+```
+
+
+# Analysis of e7386-related samples for immune compartment
+
+* If you want to access results from following analysis please refer to `01.e7386_general_analysis.{Rmd.html}`.
+1. Creating seurat object from relevant samples.
+2. Norm, clustering and dimensionality reduction.
+3. singleR cell-type annotation (not run here but stratification done per cluster and trt group)
+4. cluster and trt group level differential and pathway analysis.
+
+* If you want to access the results from immune compartment please refer to `02.e7386_immune_compt{Rmd,html}`
+
+* This file contains analysis pertaining to the epithelial compartment:
+1. recluster epi compartment, quantify and find significant cell-types between trt groups
+2. run k2t to get cluster similarity and apply signature enrichment with signatures from Hallmark, Puram et. al, Yanai et. al, e7386/icg001.
+3. annotate cells into sub-types with consideration of enrichment analysis defined in 2
+4. quantify and find significant cell-types between trt groups across coarser/main types
+4.1 if significant, find differences between trt groups
+5. Study wnt/b-cat signaling signatures and changes per group
+
+## Epithelial Compartment
+
+```{r eval=F}
+e7386_obj_new <- readRDS(file = file.path(PATH, "mmkhan_e7386/data/2023_01_09_e7386_seurat_filtered_main_final.rds"))
+```
+
+```{r eval=F}
+e7386_epi <- subset(e7386_obj_new, fcm_cell_type == "Epithelial" & seurat_clusters %in% c(4,7,8,9,10,11,16,20))
+table(e7386_epi$treatment)
+table(e7386_epi$seurat_clusters)
+```
+
+```{r eval=F}
+e7386_epi <- PercentageFeatureSet(e7386_epi, pattern = "^MT-", col.name = "percent.mt")
+e7386_epi <- NormalizeData(e7386_epi, normalization.method = "LogNormalize", scale.factor = 10000)
+e7386_epi <- FindVariableFeatures(e7386_epi, selection.method = "vst", nfeatures = 5000)
+all.genes <- rownames(e7386_epi)
+e7386_epi <- ScaleData(e7386_epi, all.genes)
+```
+
+Explained PC variance
+
+```{r eval=F}
+e7386_epi <- SCTransform(e7386_epi, vars.to.regress = "percent.mt", verbose = FALSE,  method = "glmGamPoi")
+e7386_epi <- RunPCA(e7386_epi, verbose = FALSE)
+
+ElbowPlot(e7386_epi, reduction = "pca", ndims = 50)
+
+mat <- Seurat::GetAssayData(e7386_epi, assay = "RNA", slot = "scale.data")
+pca <- e7386_epi[["pca"]]
+
+# Get the total variance:
+total_variance <- sum(matrixStats::rowVars(mat))
+
+eigValues = (pca@stdev)^2  ## EigenValues
+varExplained = eigValues / total_variance
+varExplained
+sum(varExplained)
+sum(varExplained[1:15])
+
+```
+
+```{r eval=F}
+# run sctransform
+e7386_epi <- RunUMAP(e7386_epi, dims = 1:15, verbose = FALSE)
+
+e7386_epi <- FindNeighbors(e7386_epi, dims = 1:15, verbose = FALSE)
+e7386_epi <- FindClusters(e7386_epi, verbose = FALSE, resolution = 0.5, random.seed = 1234, algorithm = "leiden")
+saveRDS(e7386_epi, file = file.path(PATH, "mmkhan_e7386/data/2023_01_09_e7386_epi.rds"))
+```
+
+## Load object
+
+```{r}
+e7386_epi <- readRDS(file = file.path(PATH, "mmkhan_e7386/data/2023_01_09_e7386_epi.rds"))
+```
+
+```{r eval=FALSE}
+#to export - NOTE: only the raw counts were exported to BT due to some issue with SCT normalised counts
+rBCS::ExportSeurat(
+  object = e7386_epi,
+  bcs.path = file.path(PATH,"mmkhan_e7386/data/2023_06_13_e7386_epi_BT.bcs"),
+  batch.name = "treatment",
+  unique.limit = 200,
+  raw.rna = "RNA", # Assay that has raw count of RNA
+  norm.rna = "RNA", # Assay that has normalized count of RNA  
+  overwrite = TRUE # Overwrite existing bcs file
+)
+```
+
+```{r}
+d <- DimPlot(object = e7386_epi, reduction = "umap", label = T, label.size = 5, label.box = T) + NoLegend()
+d
+
+#ggsave(plot = d, filename = file.path(PATH, "mmkhan_e7386/results/e7386_images/08_28_e7386_epi_sub_types_umap.png"), width = 6, height = 4)
+
+d <- DimPlot(object = e7386_epi, reduction = "umap", label = T, split.by = "treatment") + NoLegend()
+d
+#ggsave(plot = d, filename = file.path(PATH, "mmkhan_e7386/results/e7386_images/01_09_e7386_epi_umap_trt.png"), width = 12, height = 5)
+```
+
+```{r}
+pdf(file = file.path(FIGURES, 'Fig4A_epi_UMAP.pdf'))
+d <- DimPlot(e7386_epi, label = TRUE, group.by = "seurat_clusters", label.box = TRUE) +
+  NoLegend() +
+  ggtitle(NULL)
+rasterize(d, layers = 'Point', dpi = 500)
+dev.off()
+```
+
+```{r}
+pdf(file = file.path(FIGURES, 'Fig4A_epi_UMAP_1.5x.pdf'))
+d <- DimPlot(e7386_epi, label = TRUE, group.by = "seurat_clusters", label.box = TRUE, label.size = 6) +
+  NoLegend() +
+  ggtitle(NULL) + 
+  FontSize(
+    x.text = 18,
+    y.text = 18,
+    x.title = 18,
+    y.title = 18,
+    main = NULL
+)
+rasterize(d, layers = 'Point', dpi = 500)
+dev.off()
+```
+
+```{r}
+pdf(file = file.path(FIGURES, 'Fig4A_epi_UMAP_2x.pdf'))
+d <- DimPlot(e7386_epi, label = TRUE, group.by = "seurat_clusters", label.box = TRUE, label.size = 8) + 
+  NoLegend() +
+  ggtitle(NULL) +
+  FontSize(
+    x.text = 24,
+    y.text = 24,
+    x.title = 24,
+    y.title = 24,
+    main = NULL
+)
+rasterize(d, layers = 'Point', dpi = 500)
+dev.off()
+```
+
+
+
+```{r}
+library(Seurat)
+library(ggplot2)
+library(ggrastr)
+
+# Extract UMAP embeddings and cluster identities
+umap_df <- as.data.frame(Embeddings(e7386_epi, "umap"))
+umap_df$cluster <- Idents(e7386_epi)
+
+# Optional: add cluster label positions (e.g., cluster medians)
+cluster_labels <- aggregate(. ~ cluster, data = umap_df, FUN = median)
+
+# Plot using ggplot with rasterized points
+p <- ggplot(umap_df, aes(x = UMAP_1, y = UMAP_2, color = cluster)) +
+  rasterise(geom_point(size = 1), dpi = 600) +
+  geom_text(data = cluster_labels, aes(label = cluster), size = 6, show.legend = FALSE) +
+  labs(x = "UMAP_1", y = "UMAP_2") +
+  theme_classic() +
+  theme(
+    axis.title.x = element_text(size = 21, family = "Arial", color = "black"),
+    axis.title.y = element_text(size = 21, family = "Arial", color = "black"),
+    axis.text.x  = element_text(size = 18, family = "Arial", color = "black"),
+    axis.text.y  = element_text(size = 18, family = "Arial", color = "black"),
+    axis.line    = element_line(color = "black"),
+    axis.ticks   = element_line(color = "black"),
+    legend.position = "none"
+  )
+
+# Save to PDF with vector fonts and rasterized points
+ggsave(
+  filename = file.path(FIGURES, "Fig4A_epi_UMAP_final.pdf"),
+  plot = p,
+  device = cairo_pdf,
+  width = 6,
+  height = 5
+)
+
+```
+
+
+## Quantify
+
+```{r relative_proportion_wrapper}
+rel_prop <- function(obj, cond1, cond2, cols=NULL) {
+  meta_data <- obj@meta.data
+  dat <- as.data.frame(prop.table(table(meta_data[,cond1], meta_data[,cond2]), margin = 1))
+  colnames(dat) <- c(cond1, cond2, "percent")
+  
+  dat <- dat %>% 
+  group_by_at(cond1) %>% 
+  mutate(cluster_label_y = 1 - (cumsum(percent) - 0.5 * percent)) %>% 
+  ungroup()
+  
+d1 <- ggplot(dat, aes_string(cond1, y = "percent", fill = cond2)) +
+  geom_bar(position = "fill", stat = "identity") +
+  scale_y_continuous(labels = scales::percent) +
+  geom_text(aes(y = cluster_label_y, label = round(100 * percent, 2)), col="white", fontface="bold", size=3)+
+  theme_bw() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1, margin=ggplot2::margin(5, b=10))) 
+
+if(!is.null(cols)){ 
+  d <- d1 +  scale_fill_manual(values = cols)
+} else {
+  d <- d1
+}
+d
+}
+
+```
+
+```{r}
+rel_prop_boxplot <- function(obj, cond1, cond2) {
+  meta_data <- obj@meta.data
+  dat <- as.data.frame(prop.table(table(meta_data[,cond1], meta_data[,cond2]), margin = 2))
+  colnames(dat) <- c(cond1, cond2, "number")
+  dat$treatment <- meta_data$treatment[match(dat$sample, meta_data$Sample_ID)]
+
+d1 <- ggplot(dat, aes_string(x = cond2, y = "number", fill = "treatment")) +
+  geom_boxplot() +
+  theme_bw() +
+  scale_fill_manual(values = c("gray", "red","salmon", "lightpink"))+
+  theme(axis.text.x = element_text(angle = 45, hjust = 1, margin=ggplot2::margin(5, b=10)), legend.position = "bottom") +
+  ylab("%")
+  
+d1
+}
+
+```
+
+```{r}
+r1 <- rel_prop(obj = e7386_epi, cond2 = "treatment", cond1 = "seurat_clusters")
+r1
+#ggsave(plot = r1, filename = file.path(PATH, "mmkhan_e7386/results/e7386_images/01_30_e7386_epi_clust_trt_prop.png"), width = 8, height = 2.5)
+
+rel_prop(obj = e7386_epi, cond2 = "treatment", cond1 = "seurat_clusters")
+```
+
+```{r}
+r2 <- rel_prop_boxplot(obj = e7386_epi, cond1 = "sample", cond2 = "seurat_clusters")
+r2
+#ggsave(plot = r2, filename = file.path(PATH, "mmkhan_e7386/results/e7386_images/01_30_e7386_epi_clust_prop_boxplot.png"), width = 8, height = 2.5)
+
+rel_prop(obj = e7386_epi, cond2 = "treatment", cond1 = "seurat_clusters")
+```
+
+```{r ftest, eval=F}
+ftest_epi <- function(samples){
+  df1 <- e7386_epi@meta.data
+  df1 <- df1[df1$treatment %in% samples,]
+  df1$treatment <- factor(df1$treatment, levels = samples)
+  tmp <- table(df1$epi_sub, df1$treatment)
+  df2 <- data.frame(tmp[,1], tmp[,2])
+  colnames(df2) <- colnames(tmp)
+  df2 <- df2 %>%
+    dplyr::mutate(pval=sapply(
+    rownames(df2), function(z) fisher.test(table(df1$epi_sub==z, df1$treatment))$p.value)) %>%
+      dplyr::mutate(qval=p.adjust(pval, method = "BH")) %>%
+      dplyr::mutate(sig=ifelse(qval<=0.01, "***",  ifelse(qval <= 0.05, "*", ""))) %>%
+      dplyr::arrange(pval)
+  df2
+
+}
+ftest_epi(samples = c("4NQO control", "4NQO + E7386; 25 mg/kg"))
+ftest_epi(samples = c("4NQO control", "4NQO+ E7386; 50 mg/kg"))
+ftest_epi(samples = c("4NQO + E7386; 25 mg/kg", "4NQO+ E7386; 50 mg/kg"))
+
+#Fisher's test 
+ftest <- fisher.test(table(e7386_epi$epi_subtype, e7386_epi$treatment), simulate.p.value = T)
+ftest
+```
+
+```{r}
+library(gtsummary)
+library(gt)
+library(webshot)
+dat_tab1 <- e7386_epi@meta.data[, c('singleRcelltype', 'treatment')]
+tbl_summary_2 <- tbl_summary(dat_tab1, by = treatment, percent = "column")
+
+gt2 <- tbl_summary_2  %>%  as_gt()   # convert to gt table
+gt2
+# gt2 %>% tab_options(column_labels.font.size=12) %>% gt::gtsave(# save table as image
+#     filename = file.path(PATH, "mmkhan_e7386/results/e7386_images/epi_trt_clusters.png"),
+#   ) 
+
+#webshot("../results/4nqo_e7386_images/epi_trt.png", "../results/4nqo_e7386_images/epi_trt_adj.png", vwidth  = 1000, vheight = 500)
+
+
+dat_tab1 <- e7386_epi@meta.data[, c('seurat_clusters', 'treatment')]
+#dat_tab1 <- dat_tab1 %>% mutate(`Sample_ID` = factor(`Sample_ID`, levels =c("KM_BM_0318_1C", "KM_BM_0319_1", "KM_BM_0318_5NC", "KM_BM_0319_5")))
+tbl_summary_2 <- tbl_summary(dat_tab1, by = treatment, percent = "column")
+
+gt2 <- tbl_summary_2  %>%  as_gt()   # convert to gt table
+gt2
+# gt2 %>% tab_options(column_labels.font.size=12) %>% gt::gtsave(# save table as image
+#     filename = file.path(PATH, "mmkhan_e7386/results/e7386_images/epi_trt_clusters.png"),
+#   ) 
+# 
+# webshot("../results/4nqo_e7386_images/epi_trt.png", "../results/4nqo_e7386_images/epi_trt_adj.png", vwidth  = 1000, vheight = 500)
+```
+
+## FCM
+
+```{r eval=F}
+clusters <- levels(e7386_epi$seurat_clusters)
+famRes <- do.call(bind_rows, mclapply(clusters, function(clust) {
+
+  clRes <- FindConservedMarkers(e7386_epi,
+                                ident.1 = clust,
+                                grouping.var = "sample",
+                                assay = "SCT",
+                                meta.method = metap::maximump,
+                                test.use = "MAST",
+                                logfc.threshold = 0.25,
+                                min.cells.group = 5,
+                                only.pos = TRUE,
+                                verbose = FALSE)
+
+  if(nrow(clRes) > 0) {
+    clRes <- data.frame(cluster = clust, gene = rownames(clRes), clRes)
+  } else {
+    clRes <- NULL
+  }
+
+  return(clRes)
+
+}, mc.cores = 6))
+
+rownames(famRes) <- NULL
+
+# Fix column names
+colnames(famRes) <- sub("minimump_", "maximump_", colnames(famRes))
+
+# Fix false discovery rate
+famRes$maximump_fdr <- p.adjust(famRes$maximump_p_val, method = "BH")
+
+# Get minimum logFC
+famRes$maximump_logFC <- apply(famRes[, grepl("avg_log2FC", colnames(famRes))],  1, min, na.rm = TRUE)
+
+# Sort columns
+firstCols <- c(1, 2,
+  grep("maximump_", colnames(famRes)),
+  grep("max_pval", colnames(famRes)))
+lastCols <- seq(ncol(famRes))[!seq(ncol(famRes)) %in% firstCols]
+famRes_mod <- famRes[, c(firstCols, lastCols)]
+
+famRes_mod
+write.csv(famRes_mod, file.path(PATH, "mmkhan_e7386/results/01_09_fcm_e7386_epi.csv"), quote = F)
+```
+
+clusters split into different sheets
+
+```{r eval=F}
+famRes_mod <- read.csv(file.path(PATH, "mmkhan_e7386/results/01_09_fcm_e7386_epi.csv"))
+f1 <- famRes_mod %>% group_split(cluster)
+
+sheets <- list("cluster1"= f1[[1]],
+               "cluster2"= f1[[2]],
+               "cluster3"= f1[[3]],
+               "cluster4"= f1[[4]],
+               "cluster5"= f1[[5]],
+               "cluster6"= f1[[6]],
+               "cluster7"= f1[[7]],
+               "cluster8"= f1[[8]],
+               "cluster9"= f1[[9]],
+               "cluster10"= f1[[10]],
+               "cluster11"= f1[[11]],
+               "cluster12"= f1[[12]],
+               "cluster13"= f1[[13]],
+               "cluster14"= f1[[14]])
+#writexl::write_xlsx(sheets, file.path(PATH, "mmkhan_e7386/results/2024_03_12_fcm_epi_split.xlsx"))
+```
+
+
+```{r}
+famRes_mod <- read.csv(file.path(PATH, "mmkhan_e7386/results/01_09_fcm_e7386_epi.csv"))
+
+clust4_w11 <- setdiff(famRes_mod[famRes_mod$cluster=="4", 'gene'], famRes_mod[!famRes_mod$cluster %in% c("4", "11"), 'gene'])
+clust11_w4 <- setdiff(famRes_mod[famRes_mod$cluster=="11", 'gene'], famRes_mod[!famRes_mod$cluster %in% c("4", "11"), 'gene'])
+
+clust11_wo4 <- setdiff(clust4_w11, clust11_w4)
+clust4_wo11 <- setdiff(clust11_w4, clust4_w11)
+
+stress_genes <- list(clust4_w11=clust4_w11, clust11_w4=clust11_w4, clust11_wo4=clust11_wo4, clust4_wo11=clust4_wo11)
+# convert list to df
+df <- stringi::stri_list2matrix(stress_genes, byrow=F, fill = " ")
+colnames(df) <- names(stress_genes)
+df
+#write.csv(df, file = file.path(PATH, "mmkhan_e7386/results/stress_unique_genes_per_clust.csv"), quote = F)
+```
+
+```{r}
+famRes_mod %>%
+    group_by(cluster) %>%
+    filter(maximump_fdr <= 0.05) %>%
+    top_n(n = 20, wt = maximump_logFC) -> top20
+
+top20
+```
+
+
+```{r}
+rel_prop_boxplot_epi <- function(obj, cond1, cond2) {
+  meta_data <- obj@meta.data
+  dat <- as.data.frame(prop.table(table(meta_data[,cond1], meta_data[,cond2]), margin = 1))
+  colnames(dat) <- c(cond1, cond2, "number")
+  dat$treatment <- meta_data$treatment[match(dat$sample, meta_data$Sample_ID)]
+
+d1 <- ggplot(dat, aes_string(x = cond2, y = "number", fill = "treatment")) +
+  geom_boxplot() +
+  theme_bw() +
+  scale_fill_manual(values = c("gray", "red","salmon", "lightpink"))+
+  theme(axis.text.x = element_text(angle = 45, hjust = 1, margin=ggplot2::margin(5, b=10)), legend.position = "bottom") +
+  ylab("%")
+  
+d1
+}
+```
+
+```{r}
+Idents(e7386_epi) <- "seurat_clusters"
+new_epi_clust <- c("Suprabasal", "Acinar slg", "Basal", "Stress", "cell cycle", "cell cycle", "Proliferating", "Suprabasal", "wnt", "?", "Stress", "Serous acinar slg", "Acinar slg", "Suprabasal")
+
+levels(Idents(e7386_epi)) <- new_epi_clust
+e7386_epi$new_epi_clust <- Idents(e7386_epi)
+
+e7386_epi$new_epi_clust <- factor(e7386_epi$new_epi_clust, levels = c("Basal", "Suprabasal", "Acinar slg", "Serous acinar slg","cell cycle", "Proliferating",  "wnt", "?", "Stress"))
+DimPlot(e7386_epi, group.by = "new_epi_clust", label = T) + NoLegend()
+rel_prop( obj = e7386_epi, cond1 = "treatment", cond2 = "new_epi_clust")
+
+r2 <- rel_prop_boxplot_epi(obj = e7386_epi, cond2 = "new_epi_clust", cond1 = "sample")
+r2
+#ggsave(plot = r2, filename = file.path(PATH, "mmkhan_e7386/results/e7386_images/07_03_e7386_epi_clust_prop_boxplot.png"), width = 8, height = 5)
+
+r3 <- rel_prop_boxplot(obj = e7386_epi, cond2 = "seurat_clusters", cond1 = "sample")
+r3
+#ggsave(plot = r3, filename = file.path(PATH, "mmkhan_e7386/results/e7386_images/05_23_e7386_epi_clust_prop_boxplot.png"), width = 8, height = 2.5)
+
+
+rel_prop( obj = e7386_epi, cond2 = "seurat_clusters", cond1 = "treatment")
+rel_prop( obj = e7386_epi, cond1 = "seurat_clusters", cond2 = "treatment")
+```
+
+### New Epi Subtype Labeling
+
+Make "Prolif" cluster 7 as basal due to its lack of expression in CC genes/prolif genes - MKI67, TOP2A etc.,
+
+Secretory 1 is Acinar slg and 2 is Serous acinar slg
+
+```{r}
+
+Idents(e7386_epi) <- "seurat_clusters"
+new_epi_sub <- c("Suprabasal", "Secretory 1", "Basal", "Stress", "CC", "CC", "Basal", "Suprabasal", "Wnt", "Unknown", "Stress", "Secretory 2", "Secretory 1", "Suprabasal")
+
+levels(Idents(e7386_epi)) <- new_epi_sub
+e7386_epi$new_epi_sub <- Idents(e7386_epi)
+
+e7386_epi$new_epi_sub <- factor(e7386_epi$new_epi_sub, levels = c("Basal", "Suprabasal", "Secretory 1", "Secretory 2","CC",  "Wnt", "Unknown", "Stress"))
+
+DimPlot(e7386_epi, group.by = "new_epi_sub", label = T) + NoLegend()
+
+
+r2 <- rel_prop_boxplot(obj = e7386_epi, cond2 = "new_epi_sub", cond1 = "sample")
+r2
+#ggsave(plot = r2, filename = file.path(PATH, "mmkhan_e7386/results/e7386_images/07_03_e7386_epi_clust_prop_boxplot.png"), width = 8, height = 5)
+
+r3 <- rel_prop_boxplot(obj = e7386_epi, cond2 = "seurat_clusters", cond1 = "sample")
+#ggsave(plot = r3, filename = file.path(PATH, "mmkhan_e7386/results/e7386_images/05_23_e7386_epi_clust_prop_boxplot.png"), width = 8, height = 2.5)
+
+
+rel_prop( obj = e7386_epi, cond2 = "seurat_clusters", cond1 = "treatment")
+rel_prop( obj = e7386_epi, cond1 = "seurat_clusters", cond2 = "treatment")
+```
+
+Barplot
+
+```{r}
+df <- as.data.frame(prop.table(table(e7386_epi$treatment, e7386_epi$new_epi_sub), margin = 2))
+colnames(df) <- c("Treatment", "Subtype", "Prop")
+
+df$Prop <- round(df$Prop, 2)
+ggplot(df, aes(x = Subtype, y = Prop, color = Treatment, fill = Treatment)) + 
+  geom_bar( position = "stack", stat = "identity") +
+  geom_label(aes(label = Prop), colour = "white", fontface = "bold", label.size = 0.025, position=position_stack(vjust=0.5)) + 
+  scale_fill_manual(values = c("gray", "red","salmon", "lightpink"))+
+  scale_color_manual(values = c("gray", "red","salmon", "lightpink"))+
+  theme(axis.title.x = element_blank(), 
+        axis.text.y = element_blank(),
+        axis.text.x=element_blank(), 
+        axis.ticks.x=element_blank(), 
+        axis.ticks.y=element_blank(), 
+        axis.title.y = element_blank(),
+        axis.text= element_blank(),
+        axis.title.y.left = element_blank(),
+        axis.ticks.x.bottom = element_blank(),
+        axis.ticks.y.left = element_blank(),
+        legend.position = "none", 
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        panel.border = element_blank(),
+        panel.background = element_blank())+
+  NoLegend()
+```
+
+Lineplot rel. prop
+
+```{r}
+rel_prop_lineplot <- function (df, x, y, group, cols) {
+  g <- ggplot(data=df, aes_string(x=x, y=y, group=group, color=group)) +
+  scale_y_continuous(labels = scales::percent) +
+  geom_line(size=1)+
+  geom_point(size=3)+
+  theme_bw() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1, margin=ggplot2::margin(5, b=10)), 
+        axis.text.x.bottom = element_text(size=8), axis.text.y.left = element_text(size=10, face = "bold"))
+  if(!is.null(cols)) {
+     g <- g+scale_color_manual(values = cols)
+     g
+  } else {
+    g
+  }
+}
+```
+
+```{r}
+epi_cells <- data.frame(prop.table(table(e7386_epi$new_epi_sub, e7386_epi$treatment), margin = 1))
+epi_cells$Var1 <- factor(epi_cells$Var1)
+epi_cells$Var2 <- factor(epi_cells$Var2)
+colnames(epi_cells) <- c("Sub-type", "Treatment", "Rel. Prop")
+
+rel_prop_lineplot(df = epi_cells, x = "Treatment", y = '`Rel. Prop`', group='`Sub-type`', cols = NULL)
+rel_prop_lineplot(df = epi_cells, x = '`Sub-type`', y = '`Rel. Prop`', group="Treatment", cols = NULL)
+
+```
+
+```{r}
+epi_cells <- data.frame(prop.table(table(e7386_epi$new_epi_sub, e7386_epi$treatment), margin = 2))
+epi_cells$Var1 <- factor(epi_cells$Var1)
+epi_cells$Var2 <- factor(epi_cells$Var2)
+colnames(epi_cells) <- c("Sub-type", "Treatment", "Rel. Prop")
+
+rel_prop_lineplot(df = epi_cells, x = "Treatment", y = '`Rel. Prop`', group='`Sub-type`', cols = NULL)
+rel_prop_lineplot(df = epi_cells, x = '`Sub-type`', y = '`Rel. Prop`', group="Treatment", cols = NULL)
+```
+
+K2T classification
+
+```{r}
+e7386_epi$k2class <- ifelse(e7386_epi$seurat_clusters %in% c(4,7,3), "Basal", 
+                            ifelse(e7386_epi$seurat_clusters %in% c(14,9,8,1), "Suprabasal",
+                                   ifelse(e7386_epi$seurat_clusters %in% c(5,6,10), "Cell Cycle",
+                                          "Secretory")))
+
+epi_cells <- data.frame(prop.table(table(e7386_epi$k2class, e7386_epi$treatment), margin = 1))
+epi_cells$Var1 <- factor(epi_cells$Var1)
+epi_cells$Var2 <- factor(epi_cells$Var2)
+colnames(epi_cells) <- c("Sub-type", "Treatment", "Rel. Prop")
+
+rel_prop_lineplot(df = epi_cells, x = "Treatment", y = '`Rel. Prop`', group='`Sub-type`', cols = NULL)
+rel_prop_lineplot(df = epi_cells, x = '`Sub-type`', y = '`Rel. Prop`', group="Treatment", cols = NULL)
+
+```
+
+```{r}
+epi_cells <- data.frame(prop.table(table(e7386_epi$k2class, e7386_epi$treatment), margin = 2))
+epi_cells$Var1 <- factor(epi_cells$Var1)
+epi_cells$Var2 <- factor(epi_cells$Var2)
+colnames(epi_cells) <- c("Sub-type", "Treatment", "Rel. Prop")
+
+rel_prop_lineplot(df = epi_cells, x = "Treatment", y = '`Rel. Prop`', group='`Sub-type`', cols = NULL)
+rel_prop_lineplot(df = epi_cells, x = '`Sub-type`', y = '`Rel. Prop`', group="Treatment", cols = NULL)
+```
+
+
+03/09/2024
+
+```{r}
+e7386_epi@meta.data <- e7386_epi@meta.data %>%
+dplyr::mutate(k2t_sub = case_when(
+        (seurat_clusters %in% c(3,4,7)) ~ 'Basal',
+        (seurat_clusters %in% c(1,9,14,8,11)) ~ 'Suprabasal',
+        (seurat_clusters %in% c(5,6,10)) ~ 'Cell-Cycle',
+        (seurat_clusters %in% c(2,12,13)) ~ 'Secretory',
+        TRUE ~ 'Unknown'
+    ))
+```
+
+```{r}
+rel_prop_boxplot(obj = e7386_epi, cond1 = "sample", cond2 = "k2t_sub")
+```
+
+```{r}
+rel_prop_boxplot <- function(obj, cond1, cond2) {
+  meta_data <- obj@meta.data
+  dat <- as.data.frame(prop.table(table(meta_data[,cond1], meta_data[,cond2]), margin = 2))
+  colnames(dat) <- c(cond1, cond2, "number")
+  dat$treatment <- meta_data$treatment[match(dat$sample, meta_data$Sample_ID)]
+
+d1 <- ggplot(dat, aes_string(x = cond2, y = "number", fill = "treatment")) +
+  geom_boxplot() +
+  theme_bw() +
+  scale_fill_manual(values = c("gray", "red","salmon", "lightpink"))+
+  theme(axis.text.x = element_text(angle = 45, hjust = 1, margin=ggplot2::margin(5, b=10)), legend.position = "bottom") +
+  ylab("%")
+  
+d1
+}
+```
+
+
+
+## K2T
+
+11/28
+
+```{r}
+# F
+k2res1 <- readRDS(file.path(PATH, "mmkhan_e7386/results/2023_11_28_k2res_e7386_epi_clusters_sct_scaledata_actual_F_complete.RDS"))
+dendro1 <- K2dendro(k2res1)
+ggdendro::ggdendrogram(dendro1) + theme(axis.text.x = element_text(size = 20))
+#K2Taxonomer::K2dashboard(k2res1, analysis_name = "12_01_K2T_4nqo_e7386_new")
+
+library(dendextend)
+# d=color_branches(dendro1,  k=4, col = c("#581485","#900C3f","#FFC30F","#FF5733")) %>% set("branches_lwd", 3)  %>% set("labels_cex", 2)
+d <- color_branches(dendro1, k = 4, col = c("#581485","#900C3f","#FFC30F","#FF5733")) %>%
+  set("branches_lwd", 3) %>%
+  set("labels_cex", 1.4) %>%
+  set("labels_col", "black")
+
+# Save with font formatting using par()
+pdf(file.path(FIGURES, "Fig4A_dendrogram.pdf"), family = "sans", height = 4, width = 6)
+par(font = 2)
+plot(d)
+dev.off()
+
+# png(file.path(PATH, "mmkhan_e7386/results/e7386_images/dendro_epi_subtypes.png"),
+#     width     = 6,
+#     height    = 3.5,
+#     units     = "in",
+#     res       = 200,
+#     pointsize = 6)
+plot(d)
+#dev.off()
+```
+
+```{r gsva_e7386_boxplot}
+gsva_e7386_boxplot <- function(df, condn, ncol, labels_ordered){
+ gsvaResT <- df
+condition <- condn
+cond <- as.list(gsvaResT[, condition ,drop = FALSE])
+gsvaResT[, paste(condition, collapse = "_")] <- cond
+gsvaResFlat <- reshape2::melt(gsvaResT, id.vars = paste(condition,
+                                                          collapse = "_"),
+                                variable.name = "pathway")
+if (!is.null(labels_ordered)) {
+  gsvaResFlat[,paste(condn)] <- factor(gsvaResFlat[,paste(condn)], levels = labels_ordered)
+}
+
+g1 <-  ggplot2::ggplot(gsvaResFlat, ggplot2::aes_string(
+    x = paste(condn), y = "value",
+    color = "pathway")) + 
+    ggplot2::geom_boxplot(outlier.shape = NA) +
+    #ggpubr::stat_compare_means(method = "anova",  label = 'p.format', vjust = 0.75)+
+    ggplot2::theme_bw()+
+    ggplot2::facet_wrap(~paste(condn), scales = "free_y", ncol = ncol) +
+    ggplot2::theme(strip.text.x = ggplot2::element_text(size = 10))+
+    ggplot2::theme(axis.text.x = ggplot2::element_text(angle = 45, hjust = 1, size = 8))+
+    ggplot2::theme(legend.position="bottom")+
+    geom_hline(yintercept=0, linetype="dashed", color = "red")+
+    guides(colour = guide_legend(nrow = 1))
+    ggplot2::ylab("GSVA Score")
+g1
+}
+
+```
+
+
+```{r}
+scatter_wrap <- function (df, x, y, size) {
+  sp1 <- ggpubr::ggscatter(df, x = x, y = y, add = "reg.line", size = size,# Add regressin line
+   add.params = list(color = "red", fill = "lightgray"), # Customize reg. line
+   conf.int = TRUE # Add confidence interval
+)
+# Add correlation coefficient
+sp1 +  ggpubr::stat_cor(method = "pearson") 
+}
+
+corr_wrap <- function(df, x, y, names_x, names_y, type, diag) {
+  library(corrplot)
+  mat1 <- as.matrix(df[,x])
+  mat2 <- as.matrix(df[,y])
+
+  colnames(mat2) <- names_y
+  colnames(mat1) <- names_x
+  cor_mat <- cor(mat1, mat2)
+
+  corrplot::corrplot(corr = (cor_mat), is.corr = T, method = "circle", addCoef.col ='black', col = COL1("YlOrRd"), type = type, diag = diag)
+}
+```
+
+11/13
+
+```{r}
+# gsva_res_puram <- data.frame(t(readRDS(file = file.path(PATH,"mmkhan_e7386/results/2023_09_14_gsva_nqo_epi_e7386_puram.RDS"))))
+# gsva_res_nqo_e7386 <- data.frame(t(readRDS(file = file.path(PATH,"mmkhan_e7386/results/2023_11_03_4nqo_e7386_epi_diffex_sigs.rds"))))
+# gsva_res_hallmark <- data.frame(t(readRDS(file = file.path(PATH,"mmkhan_e7386/results/2023_09_07_gsva_nqo_epi_e7386_hallmarks.RDS"))))
+# 
+# gsva_res_all <- cbind(gsva_res_puram[, c("pEMT", "Stress")], gsva_res_nqo_e7386[, c("e7386_25.vs.nqo.dn", "e7386_50.vs.nqo.dn")], gsva_res_hallmark[,c("HALLMARK_EPITHELIAL_MESENCHYMAL_TRANSITION", "HALLMARK_MTORC1_SIGNALING")])
+# 
+# gsva_res_all <- data.frame(t(readRDS(file = file.path(PATH,"mmkhan_e7386/results/2023_11_13_gsva_nqo_epi_e7386_all.RDS"))))
+gsva_res_all <- data.frame(t(readRDS(file = file.path(PATH,"mmkhan_e7386/results/2023_11_20_gsva_nqo_epi_e7386_all_sct.RDS"))))
+
+```
+
+```{r}
+# gsva_res_puram <- data.frame(t(readRDS(file = file.path(PATH,"mmkhan_e7386/results/2023_09_14_gsva_nqo_epi_e7386_puram.RDS"))))
+# gsva_res_nqo_e7386 <- data.frame(t(readRDS(file = file.path(PATH,"mmkhan_e7386/results/2023_11_03_4nqo_e7386_epi_diffex_sigs.rds"))))
+# gsva_res_hallmark <- data.frame(t(readRDS(file = file.path(PATH,"mmkhan_e7386/results/2023_09_07_gsva_nqo_epi_e7386_hallmarks.RDS"))))
+# 
+# gsva_res_all <- cbind(gsva_res_puram[, c("pEMT", "Stress")], gsva_res_nqo_e7386[, c("e7386_25.vs.nqo.dn", "e7386_50.vs.nqo.dn")], gsva_res_hallmark[,c("HALLMARK_EPITHELIAL_MESENCHYMAL_TRANSITION", "HALLMARK_MTORC1_SIGNALING")])
+# 
+# #gsva_res_all <- data.frame(t(readRDS(file = file.path(PATH,"mmkhan_e7386/results/2023_11_13_gsva_nqo_epi_e7386_all.RDS"))))
+gsva_res_all <- data.frame(t(readRDS(file = file.path(PATH,"mmkhan_e7386/results/2023_11_20_gsva_nqo_epi_e7386_all_sct.RDS"))))
+```
+
+
+## GSVA Sig. Enrichment
+
+### Epi. Cell Programs
+
+```{r}
+`%ni%` <- Negate(`%in%`)
+st_pl_mt <- gsva_res_all[, colnames(gsva_res_all) %in% c("Cell_Cycle", "HALLMARK_EPITHELIAL_MESENCHYMAL_TRANSITION", "pEMT", "Epithelial_Differentiation_1", "Epithelial_Differentiation_2", "Stress", "Hypoxia")]
+st_pl_mt <- data.frame(st_pl_mt)
+st_pl_mt$seurat_clusters <- e7386_epi$seurat_clusters[match(rownames(st_pl_mt), colnames(e7386_epi))]
+
+st_pl_mt <- rename(st_pl_mt, "EMT"="HALLMARK_EPITHELIAL_MESENCHYMAL_TRANSITION", "Diff.1"= "Epithelial_Differentiation_1", "Diff.2"= "Epithelial_Differentiation_2")
+st_pl_mt <- st_pl_mt[,c("EMT", "pEMT", "Cell_Cycle", "Diff.1", "Diff.2", "Stress", "seurat_clusters")]
+# st_pl_mt$group <- factor(ifelse(st_pl_mt$seurat_clusters %in% c(3,4,7), "Basal", 
+#                          ifelse(st_pl_mt$seurat_clusters %in% c(1,8,9,14,11), "Suprabasal",
+#                                ifelse(st_pl_mt$seurat_clusters %in% c(5,6,10), "Cell-Cycle", "Secretory"))))
+# 
+# st_pl_mt$group <- factor(st_pl_mt$group, levels=c("Secretory", "Cell-Cycle", "Suprabasal", "Basal"))
+labels_ordered <- dendextend::get_leaves_attr(dendro1, "label")
+# g1 <- gsva_e7386_boxplot(df = st_pl_mt, cond = "seurat_clusters", ncol = 5, labels_ordered = labels_ordered)
+# g1
+
+st_pl_mt_mod1 <- st_pl_mt[colnames(st_pl_mt) %ni% "group"]
+g2 <- gsva_e7386_boxplot(df = st_pl_mt_mod1, cond = "seurat_clusters", ncol = 5, labels_ordered = labels_ordered)
+g2
+#ggsave(plot=g2, filename = file.path(PATH, "mmkhan_e7386/results/e7386_images/12_04_epi_cell_states.png"), width = 6, height = 3, dpi = 300)
+
+```
+
+```{r}
+`%ni%` <- Negate(`%in%`)
+st_pl_mt <- gsva_res_all[, colnames(gsva_res_all) %in% c("Cell_Cycle", "HALLMARK_EPITHELIAL_MESENCHYMAL_TRANSITION", "pEMT", "Epithelial_Differentiation_1", "Epithelial_Differentiation_2", "Stress", "Hypoxia")]
+st_pl_mt <- data.frame(st_pl_mt)
+st_pl_mt$seurat_clusters <- e7386_epi$seurat_clusters[match(rownames(st_pl_mt), colnames(e7386_epi))]
+
+st_pl_mt <- rename(st_pl_mt, "EMT"="HALLMARK_EPITHELIAL_MESENCHYMAL_TRANSITION", "Diff.1"= "Epithelial_Differentiation_1", "Diff.2"= "Epithelial_Differentiation_2")
+st_pl_mt <- st_pl_mt[,c("EMT", "pEMT", "Cell_Cycle", "Diff.1", "Diff.2", "Stress", "seurat_clusters")]
+# st_pl_mt$group <- factor(ifelse(st_pl_mt$seurat_clusters %in% c(3,4,7), "Basal", 
+#                          ifelse(st_pl_mt$seurat_clusters %in% c(1,8,9,14,11), "Suprabasal",
+#                                ifelse(st_pl_mt$seurat_clusters %in% c(5,6,10), "Cell-Cycle", "Secretory"))))
+# 
+# st_pl_mt$group <- factor(st_pl_mt$group, levels=c("Secretory", "Cell-Cycle", "Suprabasal", "Basal"))
+labels_ordered <- dendextend::get_leaves_attr(dendro1, "label")
+# g1 <- gsva_e7386_boxplot(df = st_pl_mt, cond = "seurat_clusters", ncol = 5, labels_ordered = labels_ordered)
+# g1
+
+st_pl_mt_mod1 <- st_pl_mt[colnames(st_pl_mt) %ni% "group"]
+g2 <- gsva_e7386_boxplot(df = st_pl_mt_mod1, cond = "seurat_clusters", ncol = 5, labels_ordered = labels_ordered)
+g2
+```
+
+
+### Hallmark Pathways
+
+```{r fig.width=10}
+bern <- gsva_res_all[, colnames(gsva_res_all) %in% c("Cell_Cycle", "HALLMARK_EPITHELIAL_MESENCHYMAL_TRANSITION", "pEMT", "Epithelial_Differentiation_1", "Epithelial_Differentiation_2", "Stress", "Hypoxia")]
+bern <- data.frame((bern))
+bern$seurat_clusters <- e7386_epi$seurat_clusters[match(rownames(bern), colnames(e7386_epi))]
+
+bern <- bern[c("Cell_Cycle", "HALLMARK_EPITHELIAL_MESENCHYMAL_TRANSITION", "pEMT", "Epithelial_Differentiation_1", "Epithelial_Differentiation_2", "Stress", "seurat_clusters")]
+bern <- dplyr::rename(.data = bern, "EMT"="HALLMARK_EPITHELIAL_MESENCHYMAL_TRANSITION", "Diff.1"= "Epithelial_Differentiation_1", "Diff.2"= "Epithelial_Differentiation_2")
+labels_ordered <- dendextend::get_leaves_attr(dendro1, "label")
+
+g1 <- gsva_e7386_boxplot(df = bern, cond = "seurat_clusters", ncol = 5, labels_ordered = labels_ordered)
+g1
+#ggsave(plot=g1, filename = file.path(PATH, "mmkhan_e7386/results/e7386_images/11_20_epi_cell_states.png"), width = 6, height = 3, dpi = 300)
+
+hall <- gsva_res_all[, colnames(gsva_res_all) %in% c("HALLMARK_EPITHELIAL_MESENCHYMAL_TRANSITION", "HALLMARK_INFLAMMATORY_RESPONSE", "HALLMARK_INTERFERON_ALPHA_RESPONSE", "HALLMARK_INTERFERON_GAMMA_RESPONSE",  "HALLMARK_TGF_BETA_SIGNALING", "HALLMARK_MTORC1_SIGNALING", "HALLMARK_NOTCH_SIGNALING", "HALLMARK_TNFA_SIGNALING_VIA_NFKB", "HALLMARK_WNT_BETA_CATENIN_SIGNALING")]
+hall <- data.frame(hall)
+colnames(hall) <- gsub(pattern = "HALLMARK_", replacement = "", x = colnames(hall))
+colnames(hall) <- dplyr::recode(colnames(hall), "EPITHELIAL_MESENCHYMAL_TRANSITION"="EMT", "INTERFERON_ALPHA_RESPONSE"="IFN.a", "INTERFERON_GAMMA_RESPONSE"="IFN.g", "MTORC1_SIGNALING"="MTORC1", "NOTCH_SIGNALING"="NOTCH", "TGF_BETA_SIGNALING"="TGF.b", "TNFA_SIGNALING_VIA_NFKB"="TNF.a", "WNT_BETA_CATENIN_SIGNALING"="WNT/b-CAT")
+hall$seurat_clusters <- e7386_epi$seurat_clusters[match(rownames(hall), colnames(e7386_epi))]
+
+labels_ordered <- dendextend::get_leaves_attr(dendro1, "label")
+g1 <- gsva_e7386_boxplot(df = hall, cond = "seurat_clusters", ncol = 5, labels_ordered = labels_ordered)
+g1
+```
+
+
+## GSVA Human Cell Line Sigs.
+09/25
+
+```{r fig.width=18, fig.height=6}
+human_sigs <- gsva_res_all[, colnames(gsva_res_all) %in% c("e7386.hsc3.up", "e7386.hsc3.dn", "e7386.cal27.up", "e7386.cal27.dn", "e7386.comb.up", "e7386.comb.dn", "icg001.hsc3.up", "icg001.hsc3.dn", "icg001.cal27.up", "icg001.cal27.dn", "icg001.comb.up", "icg001.comb.dn")]
+human_sigs <- data.frame((human_sigs))
+human_sigs$seurat_clusters <- e7386_epi$seurat_clusters[match(rownames(human_sigs), colnames(e7386_epi))]
+
+human_sigs <- human_sigs[c("e7386.hsc3.up", "e7386.hsc3.dn", "e7386.cal27.up", "e7386.cal27.dn", "e7386.comb.up",  "e7386.comb.dn", "icg001.hsc3.up", "icg001.hsc3.dn", "icg001.cal27.up", "icg001.cal27.dn", "icg001.comb.up", "icg001.comb.dn", "seurat_clusters")]
+#bern <- dplyr::rename(.data = bern, "EMT"="HALLMARK_EPITHELIAL_MESENCHYMAL_TRANSITION", "Diff.1"= "Epithelial_Differentiation_1", "Diff.2"= "Epithelial_Differentiation_2")
+labels_ordered <- dendextend::get_leaves_attr(dendro1, "label")
+
+g2 <- gsva_e7386_boxplot(df = human_sigs, cond = "seurat_clusters", ncol = 5, labels_ordered = labels_ordered)
+g2
+```
+
+## Correlation Analysis
+
+### Stress ~ Plasticity & Wnt/b-cat Activity
+
+```{r}
+corr_wrap(df = gsva_res_all,  x=c('Stress'), 
+          y=c('pEMT', 'HALLMARK_EPITHELIAL_MESENCHYMAL_TRANSITION', 'e7386_25.vs.nqo.dn', 'e7386_50.vs.nqo.dn', 'HALLMARK_MTORC1_SIGNALING'), 
+          names_y = c('pEMT', 'EMT', 'Wnt/b-cat@25', 'Wnt/b-cat@50', 'mTORC1'), 
+          names_x = c("Stress"), type = "full", diag = T)
+
+corr_wrap(df = gsva_res_all,  
+          x=c('Stress', 'pEMT', 'HALLMARK_EPITHELIAL_MESENCHYMAL_TRANSITION', 'e7386_25.vs.nqo.dn', 'e7386_50.vs.nqo.dn', 'HALLMARK_MTORC1_SIGNALING'), 
+          y=c('Stress', 'pEMT', 'HALLMARK_EPITHELIAL_MESENCHYMAL_TRANSITION', 'e7386_25.vs.nqo.dn', 'e7386_50.vs.nqo.dn', 'HALLMARK_MTORC1_SIGNALING'), 
+          names_y = c('Stress', 'pEMT', 'EMT', 'Wnt/b-cat@25', 'Wnt/b-cat@50', 'mTORC1'), 
+          names_x = c('Stress', 'pEMT', 'EMT', 'Wnt/b-cat@25', 'Wnt/b-cat@50', 'mTORC1'), 
+          type = "lower", diag = F)
+```
+
+
+### Stress ~ AP-1 genes
+
+```{r}
+stress_cc <- data.frame(gsva_res_all)
+stress_cc <- stress_cc[ , colnames(stress_cc) %in% c("Stress"), drop=F]
+stress_cc$treatment <- e7386_epi$treatment[match(rownames(stress_cc), colnames(e7386_epi))]
+
+stress_ge <- data.frame(t(as.matrix(e7386_epi@assays$RNA@scale.data[c('JUN', 'FOS', 'JUNB', 'FOSB', 'FOSL1', 'BMI1'), ])))
+df <- cbind(stress_cc, stress_ge)
+
+s1 <- scatter_wrap(df = df, x = "Stress", y = "JUN", size = 0)
+s2 <- scatter_wrap(df = df, x = "Stress", y = "FOS", size = 0)
+s3 <- scatter_wrap(df = df, x = "Stress", y = "JUNB", size = 0)
+s4 <- scatter_wrap(df = df, x = "Stress", y = "FOSB", size = 0)
+
+s <- ggpubr::ggarrange(s1,s2,s3,s4, ncol = 4, nrow = 1, label.x = "Stress")
+s
+#ggsave(plot = s, filename = file.path(PATH, "mmkhan_e7386/results/e7386_images/12_18_stress_genes.png"), width = 9.5, height = 3, dpi = 300)
+
+scatter_wrap(df = df, x = "Stress", y = "BMI1", size = 0)
+```
+
+### Stress ~ Wnt/b-cat Activity
+
+```{r}
+stress_cc <- data.frame(gsva_res_all)
+stress_cc <- stress_cc[ , colnames(stress_cc) %in% c("Stress", "e7386_25.vs.nqo.dn", "e7386_50.vs.nqo.dn"), drop=F]
+stress_cc$treatment <- e7386_epi$treatment[match(rownames(stress_cc), colnames(e7386_epi))]
+
+s1 <- scatter_wrap(df = stress_cc, x = "Stress", y = "e7386_25.vs.nqo.dn", size = 0.15)
+s1
+s2 <- scatter_wrap(df = stress_cc, x = "Stress", y = "e7386_50.vs.nqo.dn", size = 0.15)
+s2
+
+s <- ggpubr::ggarrange(s1,s2, ncol = 2, nrow = 1, label.x = "Stress")
+s
+#ggsave(plot = s, filename = file.path(PATH, "mmkhan_e7386/results/e7386_images/12_21_stress_bcat_dn.png"), width = 7, height = 3, dpi = 300)
+```
+
+### CC ~ Plasticity + Diff
+
+```{r}
+library(corrplot)
+df <- data.frame(gsva_res_all)
+mat1 <- as.matrix(df[,c('Cell_Cycle')])
+mat2 <- as.matrix(df[,c('pEMT', 'HALLMARK_EPITHELIAL_MESENCHYMAL_TRANSITION', 'Epithelial_Differentiation_1', 'Epithelial_Differentiation_2')])
+
+colnames(mat2) <- c('pEMT', 'EMT', 'Diff1', 'Diff2')
+cor_mat <- cor(mat1, mat2)
+
+corrplot::corrplot(corr = cor_mat, is.corr = T, method = "circle", addCoef.col ='black', col = COL1("YlOrRd"))
+
+#cc_cells <- e7386_epi$cell_id[e7386_epi@meta.data$new_epi_sub %in% c("CC") ]
+cc_cells <- e7386_epi$cell_id[e7386_epi@meta.data$seurat_clusters %in% c(5,6,10) ]
+df <- data.frame(gsva_res_all[rownames(gsva_res_all) %in% cc_cells,])
+
+# png(filename = file.path(PATH, "mmkhan_e7386/results/e7386_images/cc_scores_pl_diff.png"), 
+#      width     = 4,
+#     height    = 3,
+#     units     = "in",
+#     res       = 200,
+#     pointsize = 6)
+corr_wrap(df = df,  x=c('Cell_Cycle'), y=c('pEMT', 'HALLMARK_EPITHELIAL_MESENCHYMAL_TRANSITION', 'Epithelial_Differentiation_1', 'Epithelial_Differentiation_2'), 
+          names_y = c('pEMT', 'EMT', 'Diff.1', 'Diff.2'), names_x = c("CC"), type = "full", diag = T)
+#dev.off()
+
+```
+
+
+
+
+## Leading edge analysis
+08/04
+
+```{r}
+exp_gsva_res <- gsva_res_all
+gsva_res_df <- data.frame((exp_gsva_res))
+gsva_res_df$treatment <- e7386_epi$treatment[match(colnames(e7386_epi), rownames(gsva_res_df))]
+gsva_res_df$seurat_clusters <- e7386_epi$seurat_clusters[match(colnames(e7386_epi), rownames(gsva_res_df))]
+```
+
+Arrange the cells by the Stress GSVA scores
+
+![Heatmap](/restricted/projectnb/montilab-p/projects/oralcancer/4nqo/mmkhan_e7386/results/e7386_images/08_07_heatmap_stress_gsva_epi-sub.png){width=100%, height=100%}
+
+
+```{r eval=F}
+gsva_res_df$new_epi_sub <- e7386_epi$new_epi_sub[match(colnames(e7386_epi), rownames(gsva_res_df))]
+gsva_res_df_stress <- gsva_res_df[, c("Stress", "treatment", "seurat_clusters", "new_epi_sub")]
+#gsva_res_df_stress %>% arrange(.by_group = "Stress")
+
+#gsva_res_df_stress[order(gsva_res_df_stress$Stress, decreasing = T), ]
+
+stress_mat <- as.matrix(gsva_res_df_stress$Stress)
+rownames(stress_mat) <- rownames(gsva_res_df_stress)
+colnames(stress_mat) <- "Stress"
+
+# by seurat clusters
+top_ha <- HeatmapAnnotation(treatment = gsva_res_df_stress$treatment,
+                            clusters = gsva_res_df_stress$seurat_clusters,
+                            col = list(treatment = c("control" = "white",
+                                                     "4NQO control" = "black",
+                                                     "4NQO + E7386; 25 mg/kg" = "pink", 
+                                                     "4NQO+ E7386; 50 mg/kg" = "salmon")))
+
+png(filename = file.path(PATH, "mmkhan_e7386/results/e7386_images/08_07_heatmap_stress_gsva.png"),   
+    width     = 20,
+    height    = 5,
+    units     = "in",
+    res       = 200,
+    pointsize = 4)
+ComplexHeatmap::Heatmap(t(stress_mat), name = "GSVA",
+                        top_annotation = top_ha, show_row_names = F, 
+                        show_column_names = F,  
+                        clustering_distance_rows ="euclidean",
+                        clustering_method_rows="ward.D", 
+                        column_split=gsva_res_df_stress$seurat_clusters)
+dev.off()
+
+# by epi sub
+top_ha <- HeatmapAnnotation(treatment = gsva_res_df_stress$treatment,
+                            epi_sub = gsva_res_df_stress$new_epi_sub,
+                            col = list(treatment = c("control" = "white",
+                                                     "4NQO control" = "black",
+                                                     "4NQO + E7386; 25 mg/kg" = "pink", 
+                                                     "4NQO+ E7386; 50 mg/kg" = "salmon")))
+
+png(filename = file.path(PATH, "mmkhan_e7386/results/e7386_images/08_07_heatmap_stress_gsva_epi-sub.png"),   
+    width     = 20,
+    height    = 5,
+    units     = "in",
+    res       = 200,
+    pointsize = 4)
+ComplexHeatmap::Heatmap(t(stress_mat), name = "GSVA",
+                        top_annotation = top_ha, show_row_names = F, 
+                        show_column_names = F,  
+                        clustering_distance_rows =" euclidean",
+                        clustering_method_rows = "ward.D", 
+                        column_split = gsva_res_df_stress$new_epi_sub, column_title_rot = 90)
+dev.off()
+
+```
+
+### Stress genes
+
+![Heatmap](/restricted/projectnb/montilab-p/projects/oralcancer/4nqo/mmkhan_e7386/results/e7386_images/08_07_heatmap_stress_new.png){width=100%, height=100%}
+
+```{r eval=F}
+`%ni%` <- Negate(`%in%`)
+bern_sigs <- readRDS(file.path(PATH, "data/bernstein_hnsc_mouse.rds"))
+exp_mat <- t(as.matrix(e7386_epi@assays$SCT@data))
+exp_mat_sub <- exp_mat[, colnames(exp_mat) %in% bern_sigs$Stress]
+
+top_ha <- HeatmapAnnotation(treatment = gsva_res_df_stress$treatment,
+                            clusters = gsva_res_df_stress$seurat_clusters,
+                            col = list(treatment = c("control" = "white",
+                                                     "4NQO control" = "black",
+                                                     "4NQO + E7386; 25 mg/kg" = "pink", 
+                                                     "4NQO+ E7386; 50 mg/kg" = "salmon")))
+
+dend = as.dendrogram(hclust(dist(t(exp_mat_sub)), method = 'ward.D'))
+
+od = order.dendrogram(dend)
+
+stress_genes <- c("JUN", "FOS", "FOSB", "JUNB")
+
+selected1 = od[which(labels(dend) %in% stress_genes)]
+selected2 = od[which(labels(dend) %ni% stress_genes)]
+
+#png(filename = file.path(PATH, "mmkhan_e7386/results/e7386_images/08_07_heatmap_stress.png"), width = 750, height = 600, units = )
+png(filename = file.path(PATH, "mmkhan_e7386/results/e7386_images/08_07_heatmap_stress_new.png"),   
+    width     = 20,
+    height    = 20,
+    units     = "in",
+    res       = 400,
+    pointsize = 4)
+ComplexHeatmap::Heatmap(t(exp_mat_sub), name = "GE",
+                        top_annotation = top_ha, show_row_names = T, 
+                        show_column_names = F,  cluster_rows = dend, cluster_columns = T,
+                        # clustering_distance_rows ="euclidean",
+                        # clustering_method_rows="ward.D", 
+                        column_split=gsva_res_df_stress$seurat_clusters) +
+   rowAnnotation(link1 = anno_mark(at = selected1, 
+                                link_width = unit(0, "mm"),
+                                link_gp = gpar(lwd=0.1),
+                                padding = unit(0, "mm"),
+                                labels = rownames(t(exp_mat_sub))[selected1], side = "right",
+                                labels_gp = gpar(fontsize = 8, 
+                                                 fontface = "bold",
+                                                 col = "red"
+                                                 ))) +
+   rowAnnotation(link2 = anno_mark(at = selected2, 
+                                link_width = unit(0, "mm"),
+                                link_gp = gpar(lwd=0.1),
+                                padding = unit(0, "mm"),
+                                labels = rownames(t(exp_mat_sub))[selected2], side = "right",
+                                labels_gp = gpar(fontsize = 8, 
+                                                 fontface = "bold",
+                                                 col = "black"
+                                                 )))
+dev.off()
+
+#corrplot::corrplot(cor(stress_mat, jun_fos_mat), is.corr = F)
+```
+
+
+### Heatmap on all cells, top 500
+
+![Heatmap](/restricted/projectnb/montilab-p/projects/oralcancer/4nqo/mmkhan_e7386/results/e7386_images/08_31_heatmap_stress_gsva_4nqo.png){width=100%, height=100%}
+
+```{r eval=F}
+stress_gsva <- data.frame(t(exp_gsva_res))
+stress_gsva <- stress_gsva[,'Stress', drop=FALSE]
+stress_gsva <- stress_gsva[order(stress_gsva$Stress, decreasing = T),,drop=FALSE]
+
+stress_gsva$treatment <- e7386_epi$treatment[match(rownames(stress_gsva), colnames(e7386_epi))]
+stress_gsva$seurat_clusters <- e7386_epi$seurat_clusters[match(rownames(stress_gsva), colnames(e7386_epi))]
+
+epi_top_2k <- as.matrix(e7386_epi@assays$SCT@data[e7386_epi@assays$SCT@var.features[1:500], rownames(stress_gsva)])
+
+# corr
+epi_cor <- data.frame(cor(x = t(epi_top_2k), y = stress_gsva$Stress))
+colnames(epi_cor) <- 'cor_stress'
+
+epi_cor_mod <- data.frame(cor_stress=epi_cor[order(epi_cor$cor_stress, decreasing = T),,drop=FALSE])
+
+# by seurat clusters
+top_ha <- HeatmapAnnotation(treatment = stress_gsva$treatment, 
+                            Stress = anno_barplot(x = stress_gsva$Stress, beside = T, which = "column"),
+                            clusters = stress_gsva$seurat_clusters,
+                            col = list(treatment =  c("control" = "white",
+                                                     "4NQO control" = "black",
+                                                     "4NQO + E7386; 25 mg/kg" = "pink", 
+                                                     "4NQO+ E7386; 50 mg/kg" = "salmon"),
+                                       clusters = c("1"="grey",
+                                                    "2"="grey",
+                                                    "3"="grey",
+                                                    "4"="red",
+                                                    "5"="grey",
+                                                    "6"="grey",
+                                                    "7"="grey",
+                                                    "8"="grey",
+                                                    "9"="grey",
+                                                    "10"="grey",
+                                                    "11"="red",
+                                                    "12"="grey",
+                                                    "13"="grey",
+                                                    "14"="grey")))
+
+# arrange rows by corr values
+epi_top_2k_mod <- epi_top_2k[rownames(epi_cor_mod), ]
+stress_genes <- c("JUN", "FOS", "FOSB", "JUNB")
+
+selected1 = which(rownames(epi_top_2k_mod) %in% stress_genes)
+selected2 = which(rownames(epi_top_2k_mod) %ni% stress_genes)
+
+epi_top_2k_mod_scaled <- t(scale(t(epi_top_2k_mod)))
+
+png(filename = file.path(PATH, "mmkhan_e7386/results/e7386_images/08_31_heatmap_stress_gsva_4nqo.png"),
+width     = 10,
+height    = 20,
+units     = "in",
+res       = 400,
+pointsize = 10)
+#top_bar_anno <- (t(gsva_res_bern %>% select('Stress')))
+ComplexHeatmap::Heatmap((epi_top_2k_mod_scaled), name = "GE",
+                        top_annotation = top_ha, 
+                        show_column_names = F,  
+                        cluster_columns = F, 
+                        # clustering_distance_columns  ="euclidean",
+                        # clustering_method_columns="ward.D",
+                        cluster_rows = F) +
+ rowAnnotation(link1 = anno_mark(at = selected1, 
+                                link_width = unit(0, "mm"),
+                                link_gp = gpar(lwd=0.1),
+                                padding = unit(0, "mm"),
+                                labels = rownames((epi_top_2k_mod))[selected1], side = "left",
+                                labels_gp = gpar(fontsize = 3, 
+                                                 fontface = "bold",
+                                                 col = "red"
+                                                 ))) +
+   rowAnnotation(link2 = anno_mark(at = selected2, 
+                                link_width = unit(0, "mm"),
+                                link_gp = gpar(lwd=0.1),
+                                padding = unit(0, "mm"),
+                                labels = rownames((epi_top_2k_mod))[selected2], side = "left",
+                                labels_gp = gpar(fontsize = 3, 
+                                                 fontface = "bold",
+                                                 col = "black"
+                                                 ))) +
+  rowAnnotation(corr = anno_barplot(x = epi_cor_mod$cor_stress))
+dev.off()
+
+```
+
+
+### Heatmap on all cells, top 50
+
+![Heatmap](/restricted/projectnb/montilab-p/projects/oralcancer/4nqo/mmkhan_e7386/results/e7386_images/08_31_heatmap_stress_gsva_4nqo_small.png){width=100%, height=100%}
+
+
+```{r eval=F}
+stress_gsva <- data.frame(t(exp_gsva_res))
+stress_gsva <- stress_gsva[,'Stress', drop=FALSE]
+stress_gsva <- stress_gsva[order(stress_gsva$Stress, decreasing = T),,drop=FALSE]
+
+stress_gsva$treatment <- e7386_epi$treatment[match(rownames(stress_gsva), colnames(e7386_epi))]
+stress_gsva$seurat_clusters <- e7386_epi$seurat_clusters[match(rownames(stress_gsva), colnames(e7386_epi))]
+
+epi_top_2k <- as.matrix(e7386_epi@assays$SCT@data[e7386_epi@assays$SCT@var.features[1:500], rownames(stress_gsva)])
+
+# corr
+epi_cor <- data.frame(cor(x = t(epi_top_2k), y = stress_gsva$Stress))
+colnames(epi_cor) <- 'cor_stress'
+
+epi_cor_mod <- data.frame(cor_stress=epi_cor[order(epi_cor$cor_stress, decreasing = T),,drop=FALSE])
+
+epi_cor_mod_small <- epi_cor_mod[1:50,, drop=F]
+
+# by seurat clusters
+top_ha <- HeatmapAnnotation(treatment = stress_gsva$treatment, 
+                            Stress = anno_barplot(x = stress_gsva$Stress, beside = T, which = "column"),
+                            clusters = stress_gsva$seurat_clusters,
+                            col = list(treatment =  c("control" = "white",
+                                                     "4NQO control" = "black",
+                                                     "4NQO + E7386; 25 mg/kg" = "pink", 
+                                                     "4NQO+ E7386; 50 mg/kg" = "salmon"),
+                                       clusters = c("1"="grey",
+                                                    "2"="grey",
+                                                    "3"="grey",
+                                                    "4"="red",
+                                                    "5"="grey",
+                                                    "6"="grey",
+                                                    "7"="grey",
+                                                    "8"="grey",
+                                                    "9"="grey",
+                                                    "10"="grey",
+                                                    "11"="red",
+                                                    "12"="grey",
+                                                    "13"="grey",
+                                                    "14"="grey")))
+
+# arrange rows by corr values
+epi_top_2k_mod <- epi_top_2k[rownames(epi_cor_mod_small), ]
+stress_genes <- c("JUN", "FOS", "FOSB", "JUNB")
+
+selected1 = which(rownames(epi_top_2k_mod) %in% stress_genes)
+selected2 = which(rownames(epi_top_2k_mod) %ni% stress_genes)
+
+epi_top_2k_mod_scaled <- t(scale(t(epi_top_2k_mod)))
+
+
+
+png(filename = file.path(PATH, "mmkhan_e7386/results/e7386_images/08_31_heatmap_stress_gsva_4nqo_small.png"),
+width     = 10,
+height    = 10,
+units     = "in",
+res       = 400,
+pointsize = 10)
+#top_bar_anno <- (t(gsva_res_bern %>% select('Stress')))
+ComplexHeatmap::Heatmap((epi_top_2k_mod_scaled), name = "GE",
+                        top_annotation = top_ha, 
+                        show_column_names = F,  
+                        cluster_columns = F, 
+                        # clustering_distance_columns  ="euclidean",
+                        # clustering_method_columns="ward.D",
+                        cluster_rows = F) +
+ rowAnnotation(link1 = anno_mark(at = selected1, 
+                                link_width = unit(0, "mm"),
+                                link_gp = gpar(lwd=0.1),
+                                padding = unit(0, "mm"),
+                                labels = rownames((epi_top_2k_mod_scaled))[selected1], side = "left",
+                                labels_gp = gpar(fontsize = 8, 
+                                                 fontface = "bold",
+                                                 col = "red"
+                                                 ))) +
+   rowAnnotation(link2 = anno_mark(at = selected2, 
+                                link_width = unit(0, "mm"),
+                                link_gp = gpar(lwd=0.1),
+                                padding = unit(0, "mm"),
+                                labels = rownames((epi_top_2k_mod_scaled))[selected2], side = "left",
+                                labels_gp = gpar(fontsize = 8, 
+                                                 fontface = "bold",
+                                                 col = "black"
+                                                 ))) +
+  rowAnnotation(corr = anno_barplot(x = epi_cor_mod_small$cor_stress))
+dev.off()
+```
+
+
+## Cytotrace
+
+05/13
+
+Cytotrace to obtain differentiation profiles
+
+Change gene names to title case
+
+```{r}
+library(stringr)
+RenameGenesSeurat <- function(obj, RNA_newnames_list, SCT_newnames_list) { # Replace gene names in different slots of a Seurat object. Run this before integration. Run this before integration. It only changes obj@assays$RNA@counts, @data and @scale.data.
+  print("Run this before integration. It only changes obj@assays$RNA@counts, @data and @scale.data.")
+  RNA <- obj@assays$RNA
+  SCT <- obj@assays$SCT
+  
+  RNA@counts@Dimnames[[1]] <- RNA_newnames_list[[1]]
+  RNA@data@Dimnames[[1]] <- RNA_newnames_list[[2]]
+  rownames(RNA@scale.data) <- RNA_newnames_list[[3]]
+  
+  SCT@counts@Dimnames[[1]] <- SCT_newnames_list[[1]]
+  SCT@data@Dimnames[[1]] <- SCT_newnames_list[[2]]
+  rownames(SCT@scale.data) <- SCT_newnames_list[[3]]
+  
+  obj@assays$RNA <- RNA
+  obj@assays$SCT <- SCT
+  
+  return(obj)
+}
+
+RNA_newnames_list <- list(counts=str_to_title(rownames(e7386_epi@assays$RNA@counts)), data=str_to_title(rownames(e7386_epi@assays$RNA@data)), scale.data=str_to_title(rownames(e7386_epi@assays$RNA@scale.data)))
+SCT_newnames_list <- list(counts=str_to_title(rownames(e7386_epi@assays$SCT@counts)), data=str_to_title(rownames(e7386_epi@assays$SCT@data)), scale.data=str_to_title(rownames(e7386_epi@assays$SCT@scale.data)))
+
+e7386_epi_mouse <- RenameGenesSeurat(obj = e7386_epi, RNA_newnames_list = RNA_newnames_list, SCT_newnames_list = SCT_newnames_list)
+```
+
+```{r}
+library(CytoTRACE2)
+e7386_epi_mouse <- CytoTRACE2::cytotrace2(input = e7386_epi_mouse, slot_type = "counts", species = "mouse", is_seurat = T)
+plots_mouse <- plotData(cytotrace2_result = e7386_epi_mouse, 
+                  annotation = e7386_epi_mouse@meta.data,
+                  expression_data = as.matrix(e7386_epi_mouse@assays$RNA@counts), is_seurat = T
+                  )
+plots_mouse$CytoTRACE2_UMAP
+plots_mouse$CytoTRACE2_Potency_UMAP
+plots_mouse$CytoTRACE2_Relative_UMAP
+```
+
+
+```{r}
+df <- e7386_epi_mouse@meta.data
+df$treatment_mod <- recode(df$treatment, '4NQO + E7386; 25 mg/kg' = 'E7386', '4NQO+ E7386; 50 mg/kg'= 'E7386')
+df$treatment_mod <- factor(df$treatment_mod, levels = c("control", "4NQO control", "E7386"))
+
+df_cc <- df %>% filter(seurat_clusters %in% c(5,6,10))
+
+ggplot(df, aes(x = CytoTRACE2_Relative, y = seurat_clusters))+geom_boxplot()+coord_flip()
+ggplot(df, aes(x = CytoTRACE2_Score, y = seurat_clusters))+geom_boxplot()+coord_flip()
+
+
+ggplot(df, aes(x = CytoTRACE2_Relative, y = seurat_clusters))+geom_boxplot()+facet_wrap(~treatment)+coord_flip()
+
+ggplot(df_cc, aes(x = CytoTRACE2_Relative, y = treatment_mod))+geom_boxplot()+facet_wrap(seurat_clusters~.)+coord_flip()
+```
+
+
+
+```{r}
+ge_boxplot <- function(genes, obj, cond, ncol){
+  df <- data.frame(t(as.matrix(obj@assays$RNA@scale.data[c(genes),])))
+  condition <- cond
+  #cond <- apply(obj[, cond, drop = FALSE], 1, paste, collapse = "_")
+  df[, paste(cond)] <-  apply(obj@meta.data[, cond, drop = FALSE],1, paste, collapse = "_")
+  df[, paste(cond)] <- factor(obj$treatment)
+
+  gsvaResFlat <- reshape2::melt(df, id.vars = paste(cond, collapse = "_"), variable.name = "group")
+
+  g1 <- ggplot2::ggplot(gsvaResFlat, ggplot2::aes_string(
+    x = paste(condition, collapse = "_"), y = "value",
+    color = paste(condition, collapse = "_"))) +
+    ggplot2::geom_boxplot(outlier.shape = NA) +
+    #ggplot2::geom_jitter(size=0.0) +
+    ggplot2::facet_wrap(~group, scale = "free_y",
+                        ncol = ncol) +
+    ggpubr::stat_compare_means(method = "anova",  label = 'p.format')+
+    ggplot2::theme(strip.text.x = ggplot2::element_text(size = 10))+
+    ggplot2::theme(axis.text.x = element_text(angle = 45, hjust = 1))+
+    labs(title = 'Gene Expression', y = "log-Norm Counts", x = cond)+
+    theme(axis.text = element_text(size = 10), axis.title = element_text(size = 10, face = "bold"))
+  g1
+}
+```
+
+
+```{r}
+VlnPlot(object = e7386_epi, features = "HELLS", group.by = "treatment")
+DotPlot(object = e7386_epi, features = "HELLS", group.by = "treatment")
+
+```
+
+Stress Subset
+
+```{r}
+stress_epi <- subset(e7386_epi, new_epi_sub == "Stress")
+
+d1 <-DotPlot(object = stress_epi, features = c("EGFR", "PDGFRB", "VEGFA", "HIF1A", 'BMI1', 'ALDH7A1', 'SOX2', 'CD44', 'PROM1', 'ALDH1A3'), group.by = "treatment", assay = "SCT", scale = T) + theme_bw()+ ggplot2::theme(axis.text.x =  ggplot2::element_text(angle = 45, hjust = 1, size = 15, family = "Arial", face = "bold",), axis.text.y = ggplot2::element_text(size = 13, family = "Arial", face = "bold"), panel.grid = element_blank(), 
+                 axis.title.x = ggplot2::element_text(size = 15, family = "Arial", face = "bold"),  axis.title.y = ggplot2::element_text(size = 10, family = "Arial", face = "bold"), 
+                 legend.text =  ggplot2::element_text(size = 15, family = "Arial", face = "bold"),
+                 legend.title = ggplot2::element_text(size = 15, family = "Arial", face = "bold"),
+                 axis.title.y.left = ggplot2::element_text(size = 13, family = "Arial", face = "bold"))+
+  scale_y_discrete(limits=rev) 
+d1
+##ggsave(plot = d1, filename = file.path(PATH, "mmkhan_e7386/results/e7386_images/02_09_stress_csc_genes.png"), width = 10, height = 5, dpi = 300)
+
+
+VlnPlot(object = e7386_epi, features = c('BMI1', 'ALDH7A1', 'SOX2', 'CD44', 'PROM1', 'ALDH1A3'), group.by = "seurat_clusters", assay = "SCT", pt.size = 0)
+```
+
+
+## Check for GE 
+
+```{r}
+v1 <- VlnPlot(object = e7386_epi, features = c("KRT4", "KRT13",  "KRT5", "KRT14", "KRT15", "TGM3", "KRTDAP"), group.by = "new_epi_sub", assay = "SCT", pt.size = 0, slot = "scale.data", stack = T, flip = T) + ggplot2::theme(axis.text.x = element_text(angle = 45, hjust = 1)) + NoLegend()
+v2 <- VlnPlot(object = e7386_epi, features = c("MKI67", "TOP2A", "CDC20", "AURKA"), group.by = "new_epi_sub", assay = "SCT", pt.size = 0, slot = "scale.data", stack = T, flip = T) + ggplot2::theme(axis.text.x = element_text(angle = 45, hjust = 1))+ NoLegend()
+v3 <- VlnPlot(object = e7386_epi, features = c("JUNB", "FOS", "FOSB", "FOSL1"), group.by = "new_epi_sub", assay = "SCT", pt.size = 0, slot = "scale.data", stack = T, flip = T) + ggplot2::theme(axis.text.x = element_text(angle = 45, hjust = 1))+ NoLegend()
+v4 <- VlnPlot(object = e7386_epi, features = c("MUC5B", "AQP5", "BPIFA2", "BPIFB1"), group.by = "new_epi_sub", assay = "SCT", pt.size = 0, slot = "scale.data", stack = T, flip = T) + ggplot2::theme(axis.text.x = element_text(angle = 45, hjust = 1))+ NoLegend()
+v5 <- VlnPlot(object = e7386_epi, features = c("PDPN", "VIM", "CDH1"), group.by = "new_epi_sub", assay = "SCT", pt.size = 0, slot = "scale.data", stack = T, flip = T) + ggplot2::theme(axis.text.x = element_text(angle = 45, hjust = 1))+ NoLegend()
+                                         #    , , "PDPN", "VIM", 
+                                         # "TRP63", "SOX2", "ECM1", "MUC1", "CDH1", "MYC", "KLF4", "CD34"
+v1
+v2
+v3
+v4
+v5
+
+# ggsave(plot = v1, filename = file.path(PATH, "mmkhan_e7386/results/e7386_images/11_07_vlnplot_epi1.png"), width = 8, height = 8, dpi = 200)
+# ggsave(plot = v2, filename = file.path(PATH, "mmkhan_e7386/results/e7386_images/11_07_vlnplot_epi2.png"), width = 8, height = 8, dpi = 200)
+# ggsave(plot = v3, filename = file.path(PATH, "mmkhan_e7386/results/e7386_images/11_07_vlnplot_epi3.png"), width = 8, height = 8, dpi = 200)
+# ggsave(plot = v4, filename = file.path(PATH, "mmkhan_e7386/results/e7386_images/11_07_vlnplot_epi4.png"), width = 8, height = 8, dpi = 200)
+
+
+VlnPlot(object = e7386_epi, features = c("KRT16", "KRT8", "SPRR1B"), group.by = "treatment", assay = "SCT", pt.size = 0, slot = "scale.data", stack = T, flip = T) + ggplot2::theme(axis.text.x = element_text(angle = 45, hjust = 1)) + NoLegend()
+VlnPlot(object = e7386_epi, features = c("KRT16", "KRT8", "SPRR1B"), group.by = "new_epi_sub", assay = "SCT", pt.size = 0, slot = "scale.data", stack = T, flip = T) + ggplot2::theme(axis.text.x = element_text(angle = 45, hjust = 1)) + NoLegend()
+
+DotPlot(object = e7386_epi, features = c("KRT16", "KRT8", "CLDN4"), group.by = "treatment", assay = "SCT") + ggplot2::theme(axis.text.x = element_text(angle = 45, hjust = 1))
+DotPlot(object = e7386_epi, features = c("KRT16", "CLDN4"), group.by = "new_epi_sub", assay = "SCT") + ggplot2::theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+cc_sub <- subset(e7386_epi, seurat_clusters %in%  c(5,6,10))
+VlnPlot(object = cc_sub, features = c("KRT16", "KRT8", "SPRR1B"), group.by = "treatment", assay = "SCT", pt.size = 0, slot = "scale.data", stack = T, flip = T) + ggplot2::theme(axis.text.x = element_text(angle = 45, hjust = 1)) + NoLegend()
+VlnPlot(object = cc_sub, features = c("KRT16", "KRT8", "SPRR1B"), group.by = "new_epi_sub", assay = "SCT", pt.size = 0, slot = "scale.data", stack = T, flip = T) + ggplot2::theme(axis.text.x = element_text(angle = 45, hjust = 1)) + NoLegend()
+
+DotPlot(object = cc_sub, features = c("KRT16", "KRT8", "SPRR1B", "CLDN4"), group.by = "treatment", assay = "RNA") + ggplot2::theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+VlnPlot(object = cc_sub, features = c("MKI67", "TOP2A", "CDK1"), group.by = "treatment", assay = "RNA", pt.size = 0, slot = "scale.data", stack = T, flip = T) + ggplot2::theme(axis.text.x = element_text(angle = 45, hjust = 1))
+VlnPlot(object = cc_sub, features = c("MKI67", "TOP2A", "CDK1", "KRT16", "KRT8", "SPRR1B"), group.by = "treatment", assay = "SCT", pt.size = 0, slot = "scale.data", stack = T, flip = T) + ggplot2::theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+d1 <- DotPlot(object = cc_sub, features = c("MKI67", "TOP2A", "CDK1", "KRT16", "KRT8", "SPRR1B"), group.by = "treatment", assay = "SCT", cols = c("white", "purple")) + theme_bw()+ ggplot2::theme(axis.text.x = ggplot2::element_text(angle = 45, hjust = 1, size = 15, family = "Arial", face = "bold",), axis.text.y = ggplot2::element_text(size = 13, family = "Arial", face = "bold"), panel.grid = element_blank(), 
+                 axis.title.x = ggplot2::element_text(size = 15, family = "Arial", face = "bold"),  axis.title.y = ggplot2::element_text(size = 10, family = "Arial", face = "bold"), 
+                 legend.text =  ggplot2::element_text(size = 15, family = "Arial", face = "bold"),
+                 legend.title = ggplot2::element_text(size = 15, family = "Arial", face = "bold"),
+                 axis.title.y.left = ggplot2::element_text(size = 13, family = "Arial", face = "bold"))+
+  scale_y_discrete(limits=rev) 
+d1
+#ggsave(plot = d1, filename = file.path(PATH, "mmkhan_e7386/results/e7386_images/11_27_cc_genes.png"), width = 10, height = 5, dpi = 300)
+```
+
+
+## CSCs
+ 
+```{r}
+DotPlot(object = e7386_epi, features = c('BMI1'), group.by = "seurat_clusters") 
+VlnPlot(object = e7386_epi, features = c('BMI1'), group.by = "seurat_clusters")
+DotPlot(object = e7386_epi, features = c('BMI1'), group.by = "treatment")
+
+DotPlot(object = e7386_epi, features = c('BMI1', 'ALDH7A1', 'SOX2', 'CD44', 'PROM1', 'ALDH1A3'), group.by = "seurat_clusters") 
+DotPlot(object = e7386_epi, features = c('BMI1', 'ALDH7A1', 'SOX2', 'CD44', 'PROM1', 'ALDH1A3'), group.by = "new_epi_sub") 
+
+DotPlot(object = e7386_epi, features = c('BMI1', 'ALDH7A1', 'SOX2', 'CD44', 'PROM1', 'ALDH1A3'), group.by = "new_epi_sub") 
+
+DotPlot(object = e7386_epi, features = c("EGFR", "PDGFRB", "VEGFA", "BMI1"), group.by = "new_epi_sub", assay = "SCT")
+VlnPlot(object = e7386_epi, features = c("EGFR", "PDGFRB", "VEGFA", "BMI1"), group.by = "new_epi_sub", assay = "SCT", pt.size = 0)
+
+
+```
+
+## Apoptosis
+
+```{r}
+
+KEGG <- hypeR::msigdb_gsets(species="Mus musculus", category = 'C2', subcategory = 'CP:KEGG')
+kegg_apop <- list("apop"=toupper(KEGG$genesets$KEGG_APOPTOSIS))
+e7386_epi <- AddModuleScore(object = e7386_epi, features = kegg_apop, assay = "RNA", name = "KEGG_apop")
+
+DotPlot(object = e7386_epi, features = "KEGG_apop1", group.by = "treatment") 
+
+FeaturePlot(e7386_epi, features  = "KEGG_apop1")
+
+VlnPlot(e7386_epi, features  = "KEGG_apop1", group.by = c("seurat_clusters"), sort = T,pt.size = 0)
+```
+
+
+```{r fig.width=10}
+DotPlot(object = e7386_epi, features = c("EPCAM", "CDH1")) # epi markers
+
+DotPlot(object = e7386_epi, features = c("UNG", "MKI67", "TOP2A", "CDC20", "AURKA"), group.by = "treatment") # Prolif markers
+
+DotPlot(object = e7386_epi, features = c("COL1A1", "COL3A1"))
+
+VlnPlot(object = e7386_epi, features = c("ITGB1"), group.by = "new_epi_clust", assay = "RNA", pt.size = 0)
+
+VlnPlot(object = e7386_epi, features = c("JUN", "FOS"), group.by = "treatment", assay = "RNA", pt.size = 0)
+
+
+VlnPlot(object = e7386_epi, features = c("BMI1", "KRTDAP"), group.by = "new_epi_clust", assay = "RNA", pt.size = 0)
+
+FeaturePlot(object = e7386_epi, features = c("BMI1", "KRTDAP", "KRT6A", "MKI67"))
+
+Idents(e7386_epi) <- "seurat_clusters"
+DotPlot(object = e7386_epi, features = c("KRT4", "KRT13",  "KRT5", "KRT14", "KRT15", "KRT17", "KRT19", "TGM3", "KRTDAP", "MKI67", "TOP2A", "CDC20", "AURKA",
+                                              "JUNB", "FOS", "FOSB", "FOSL1",  "FOSL2", "MUC5B", "AQP5", "BPIFA2", "BHLHA15", "PDPN", "VIM", 
+                                         "TRP63", "SOX2", "ECM1", "MUC1", "CDH1", "MYC", "KLF4", "CD34"), cluster.idents = T, assay = "SCT", scale.by = "size")+
+  ggplot2::theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+
+
+
+
+DotPlot(object = e7386_epi, features = c("KRT4", "KRT13",  "KRT5", "KRT14", "KRT15", "KRT17", "KRT19", "TGM3", "KRTDAP", "MKI67", "TOP2A", "CDC20", "AURKA",
+                                              "JUNB", "FOS", "FOSB", "FOSL1",  "FOSL2", "MUC5B", "AQP5", "BPIFA2", "BHLHA15", "PDPN", "VIM", 
+                                         "TRP63", "SOX2", "ECM1", "MUC1", "CDH1", "MYC", "KLF4", "CD34", "EPCAM"), group.by = "new_epi_clust", assay = "RNA", scale.by = "size")+
+  ggplot2::theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+bcat_genes <- c('AXIN1', 'AXIN2', 'APC', 'APC2', 'WNT7B', 'FZD3', 'HNF1A', 'TCF12', 'MYC', 'CDH1', 'CDKN2A', 'EFNB3', 'VEGFA', 'SOX2', 'SOX9')
+DotPlot(object = e7386_epi, features = bcat_genes, group.by = "treatment", assay = "RNA", scale.by = "size")+
+  ggplot2::theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+
+DotPlot(object = e7386_epi, features = bcat_genes, group.by = "new_epi_clust", assay = "RNA", scale.by = "size")+
+  ggplot2::theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+
+## Cell Cycle Scoring
+
+```{r}
+bern_sigs <- readRDS(file.path(PATH, "data/bernstein_hnsc_mouse.rds"))
+
+# loaded with seurat
+cc.genes.seurat <- c(cc.genes$s.genes, cc.genes$g2m.genes)
+
+table(bern_sigs$Cell_Cycle %in% cc.genes.seurat)
+```
+
+```{r}
+e7386_epi_cc <- CellCycleScoring(e7386_epi, s.features = cc.genes$s.genes, g2m.features = cc.genes$g2m.genes, set.ident = TRUE)
+
+# view cell cycle scores and phase assignments
+head(e7386_epi_cc[[]])
+
+# Running a PCA on cell cycle genes reveals, unsurprisingly, that cells separate entirely by
+# phase
+e7386_epi_cc <- RunPCA(e7386_epi_cc, features = c(cc.genes$s.genes, cc.genes$g2m.genes))
+DimPlot(e7386_epi_cc)
+```
+
+
+```{r gene_expression_boxplot_wrapper}
+
+ge_boxplot <- function(genes, obj, cond, ncol){
+  mat <- (scale(t(as.matrix(obj@assays$SCT@counts))))
+  df <- data.frame(mat[, c(genes)])
+  condition <- cond
+  #cond <- apply(obj[, cond, drop = FALSE], 1, paste, collapse = "_")
+  df[, paste(cond)] <-  apply(obj@meta.data[, cond, drop = FALSE],1, paste, collapse = "_")
+  df[, paste(cond)] <- factor(obj$treatment)
+
+  gsvaResFlat <- reshape2::melt(df, id.vars = paste(cond, collapse = "_"), variable.name = "group")
+
+  g1 <- ggplot2::ggplot(gsvaResFlat, ggplot2::aes_string(
+    x = paste(condition, collapse = "_"), y = "value",
+    color = paste(condition, collapse = "_"))) +
+    ggplot2::geom_boxplot(outlier.shape = NA) +
+    #ggplot2::geom_jitter(size=0.0) +
+    ggplot2::facet_wrap(~group, scale = "free_y",
+                        ncol = ncol) +
+    ggpubr::stat_compare_means(method = "anova",  label = 'p.format')+
+    ggplot2::theme(strip.text.x = ggplot2::element_text(size = 10))+
+    ggplot2::theme(axis.text.x = element_text(angle = 45, hjust = 1))+
+    labs(title = 'Gene Expression', y = "log-Norm Counts", x = cond)+
+    theme(axis.text = element_text(size = 10), axis.title = element_text(size = 10, face = "bold"))
+  g1
+}
+
+ge_boxplot(genes  = c('BMI1', 'ALDH7A1', 'SOX2', 'CD44', 'PROM1', 'ALDH1A3'), obj = e7386_epi, cond  = "treatment", ncol = 4)
+
+```
+
+
+
+## NSLC B-cat genes
+
+Gene expr patterns don't look convincing of either groups, do GSVA instead
+
+```{r}
+bcat_genes <- list("bcat"= c('AXIN1', 'AXIN2', 'APC', 'APC2', 'WNT7B', 'FZD3', 'HNF1A', 'TCF12', 'MYC', 'CDH1', 'CDKN2A', 'EFNB3', 'VEGFA', 'SOX2', 'SOX9'))
+bcat_genes$bcat %in% rownames(e7386_epi@assays$RNA@data)
+VlnPlot(object = e7386_epi, features = bcat_genes$bcat[1:5], group.by = "treatment", pt.size = 0, assay = "SCT", slot = "data")
+VlnPlot(object = e7386_epi, features = bcat_genes$bcat[6:10], group.by = "treatment", pt.size = 0, assay = "SCT", slot = "data")
+VlnPlot(object = e7386_epi, features = bcat_genes$bcat[11:15], group.by = "treatment", pt.size = 0, assay = "SCT", slot = "data")
+```
+```{r}
+gsva_bcat <- data.frame(t(readRDS(file.path(PATH, "mmkhan_e7386/results/04_14_e7386_bcat.rds"))))
+gsva_bcat$seurat_clusters <- e7386_epi$seurat_clusters[match(rownames(gsva_bcat), colnames(e7386_epi))]
+gsva_bcat$treatment <- e7386_epi$treatment[match(rownames(gsva_bcat), colnames(e7386_epi))]
+gsva_bcat$subtype <- e7386_epi$new_epi_clust[match(rownames(gsva_bcat), colnames(e7386_epi))]
+```
+
+```{r}
+bcat_gsvaplot <- function(cond){
+  if(cond == "subtype") {
+    gsvaResT <- gsva_bcat[,c('bcat', 'subtype', 'treatment')]
+    condn <- as.list(gsvaResT[, 'subtype' ,drop = FALSE])
+    gsvaResT[, paste('subtype', collapse = "_")] <- condn
+    gsvaResFlat <- reshape2::melt(gsvaResT, id.vars = c('subtype', 'treatment'),
+                                variable.name = "pathway")
+    g1 <-  ggplot2::ggplot(gsvaResFlat, ggplot2::aes_string(
+    x = "treatment", y = "value",
+    color = paste(cond))) +
+    ggplot2::geom_boxplot(outlier.shape = NA) +
+    ggpubr::stat_compare_means(method = "anova",  label = 'p.format', vjust = 0.75)+
+    ggplot2::theme_bw()+
+    ggplot2::facet_wrap(facets = "subtype", ncol = 9)+
+    ggplot2::theme(strip.text.x = ggplot2::element_text(size = 10))+
+    geom_hline(yintercept=0, linetype="dashed", color = "red")+
+    ggplot2::theme(axis.text.x = ggplot2::element_text(angle = 45, hjust = 1, size = 8))+
+    ggplot2::theme(legend.position="none")+
+    ggplot2::ylab("GSVA Score")
+  } else {
+    gsvaResT <- gsva_bcat[,c('bcat', cond)]
+    condn <- as.list(gsvaResT[, cond ,drop = FALSE])
+    gsvaResT[, paste(cond, collapse = "_")] <- condn
+    gsvaResFlat <- reshape2::melt(gsvaResT, id.vars = paste(cond,
+                                                          collapse = "_"),
+                                variable.name = "pathway")
+    g1 <-  ggplot2::ggplot(gsvaResFlat, ggplot2::aes_string(
+    x = paste(cond), y = "value",
+    color = paste(cond))) +
+    ggplot2::geom_boxplot(outlier.shape = NA) +
+    ggpubr::stat_compare_means(method = "anova",  label = 'p.format', vjust = 0.75)+
+    ggplot2::theme_bw()+
+    ggplot2::theme(strip.text.x = ggplot2::element_text(size = 10))+
+    ggplot2::theme(axis.text.x = ggplot2::element_text(angle = 45, hjust = 1, size = 8))+
+    geom_hline(yintercept=0, linetype="dashed", color = "red")+
+    ggplot2::theme(legend.position="none")+
+    ggplot2::ylab("GSVA Score")
+  }
+ g1
+}
+
+bcat_gsvaplot(cond = "treatment")
+bcat_gsvaplot(cond = "seurat_clusters")
+bcat_gsvaplot(cond = "subtype")
+#ggsave(plot = g1, filename = file.path(PATH, "results/4nqo_e7386_images/gsva_e7386_epi.png"), width = 16, height = 10, dpi = 300)
+```
+
+
+
+## Senescence and CC
+
+```{r}
+puram_sene_xl <- readxl::read_xlsx(path  = file.path(PATH, "mmkhan_e7386/data/Puram_senescence.xlsx"), sheet = 6, skip = 1)
+puram_sene_sig <- list("puram_senes"=puram_sene_xl$EpiSen_Signature[!is.na(puram_sene_xl$EpiSen_Signature)])
+
+mayo_sene_xl <- readxl::read_xlsx(path  = file.path(PATH, "mmkhan_e7386/data/senmayo_sigs.xlsx"), sheet = 2)
+mayo_sene_sig <- list("mayo_senes"=toupper(mayo_sene_xl$`Gene(murine)`))
+
+mayo_sene_sig$mayo_senes[mayo_sene_sig$mayo_senes %in% puram_sene_sig$puram_senes]
+
+```
+
+```{r}
+
+gsva_res_sene <- readRDS(file = file.path(PATH,"mmkhan_e7386/results/2023_09_19_gsva_nqo_epi_e7386_puram_sene.RDS"))
+gsva_res_puram <- readRDS(file = file.path(PATH,"mmkhan_e7386/results/2023_09_14_gsva_nqo_epi_e7386_puram.RDS"))
+gsva_res_mayo <- readRDS(file = file.path(PATH,"mmkhan_e7386/results/2023_09_27_gsva_nqo_epi_e7386_mayo_sene.RDS"))
+
+gsva_res_sene <- data.frame(t(gsva_res_sene))
+gsva_res_puram <- data.frame(t(gsva_res_puram))
+gsva_res_mayo <- data.frame(t(gsva_res_mayo))
+
+gsva_res_sene$cc <- gsva_res_puram$Cell_Cycle
+gsva_res_sene$mayo_sene <- gsva_res_mayo$mayo_senes
+
+gsva_res_sene$seurat_clusters <- e7386_epi$seurat_clusters[match(rownames(gsva_res_sene), colnames(e7386_epi))]
+
+labels_ordered <- dendextend::get_leaves_attr(dendro1, "label")
+colnames(gsva_res_sene) <- c("Puram_S", "CC", "Mayo_S", "seurat_clusters")
+gsva_res_sene <- gsva_res_sene[,c( "CC", "Puram_S", "Mayo_S", "seurat_clusters")]
+g1 <- gsva_e7386_boxplot(df = gsva_res_sene, cond = "seurat_clusters", ncol = 5, labels_ordered = labels_ordered)
+g1
+
+e7386_epi$puram_cc_scores <- exp_gsva_res[colnames(exp_gsva_res) %in% c("Cell_Cycle")]
+e7386_epi$puram_senes_scores <- gsva_res_sene$Puram_S
+
+FeaturePlot(e7386_epi, features = c("puram_cc_scores", "puram_senes_scores"), label = T, split.by = "treatment")
+FeaturePlot(e7386_epi, features = "puram_senes_scores")
+
+```
+
+```{r}
+gsva_res_sene_trt <- gsva_res_sene[!colnames(gsva_res_sene) %in% "seurat_clusters" ]
+gsva_res_sene_trt$treatment <- e7386_epi$treatment[match(rownames(gsva_res_sene_trt), colnames(e7386_epi))]
+g1 <- gsva_e7386_boxplot(df = gsva_res_sene_trt, cond = "treatment", ncol = 5, labels_ordered = NULL)
+g1
+```
+
+
+
+
+
+
+
+
+
+

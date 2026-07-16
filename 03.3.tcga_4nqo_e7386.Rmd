@@ -1,0 +1,639 @@
+---
+title: "03.3.tcga_4nqo_e7386"
+author: "M. Muzamil Khan"
+date: "07/25/2023"
+output:
+  html_document:
+    code_folding: hide
+    theme: flatly
+    toc: yes
+    toc_float: true
+  html_notebook:
+    code_folding: hide
+    theme: flatly
+    toc: yes
+    toc_float: true
+  pdf_document:
+    toc: yes
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+nqoPATH <- "/restricted/projectnb/montilab-p/projects/oralcancer/4nqo/"
+moscPATH <- "/restricted/projectnb/montilab-p/projects/oralcancer/4mosc1/"
+
+library(Biobase)
+library(tidyverse)
+library(Seurat)
+library(GSVA)
+library(survminer)
+library(survival)
+library(ggplot2)
+library(msigdbr)
+library(adjustedCurves)
+```
+
+
+```{r eval=FALSE}
+## Clean up eSet {.tabset .tabset-fade .tabset-pills}
+## Add HPV status to eSet, tumor grade, and make sure gene names are hnsc symbols
+
+require(Biobase)
+require(tidyverse)
+require(TCGAbiolinks)
+
+eset <- readRDS("/restricted/projectnb/montilab-p/CBMrepositoryData/TCGA-GDC/esets_filtered/TCGA-HNSC_2020-03-22_DESeq2_log_filtered_eset.rds") # doesn't have tumor grade
+eset_old <- readRDS("/restricted/projectnb/montilab-p/CBMrepositoryData/TCGA-GDC/esets_postprocessed/TCGA-HNSC_2020-03-22_wLegacyPData_DESeq2_log_eSet.rds") # gene names aren't hnsc symbols
+
+# add back tumor grade from another eset
+eset$hpv_status <- eset_old$hpv_status[match(eset_old$sample_id, eset$sample_id)]
+
+# add FID to pData
+eset$fid <- rownames(pData(eset))
+
+# add back tumor grade from another eset
+eset$tumor_grade <- eset_old$tumor_grade[match(eset_old$sample_id, eset$sample_id)]
+
+pData(eset)
+
+saveRDS(eset, file.path(nqoPATH, "mmkhan_e7386/data/2023_06_08_hnscc_eset_corrected.rds"))
+
+```
+
+```{r eval=FALSE}
+### If needed use the code below to get hpv status from TCGABiolinks
+
+# match sample id
+rid2 <- substr(eset$sample_id, 1, nchar(eset$sample_id) - 4)
+
+# Add hpv status
+query <- GDCquery(
+project = "TCGA-HNSC",
+data.category = "Biospecimen",
+data.type = "Biospecimen Supplement",
+data.format = "BCR Biotab"
+)
+
+GDCdownload(query)
+
+# get hpv status
+hpv <- GDCprepare(query)$auxiliary_hnsc %>%
+as.data.frame()
+rownames(hpv) <- hpv$bcr_patient_barcode
+eset$hpv_status <- hpv[rid2, "hpv_status"]
+```
+
+```{r eval=F}
+data_lina <- readRDS("/restricted/projectnb/montilab-p/projects/oralcancer/4mosc1/data/TCGA-HNSC_edgeR_log_hpv_E7836_eSet.rds")
+data_old <- readRDS("/restricted/projectnb/montilab-p/CBMrepositoryData/TCGA-GDC/esets_postprocessed/TCGA-OSCC_2020-03-22_wLegacyPData_DESeq2_log_eSet.rds")
+
+eset_old <- readRDS("/restricted/projectnb/montilab-p/CBMrepositoryData/TCGA-GDC/esets_filtered/TCGA-HNSC_2020-03-22_DESeq2_log_filtered_eset.rds")
+
+
+pData(data_old)
+
+eset
+
+pData(data_old)$sample_id %in% pData(data)$sample_id
+pData(data)$sample_id
+ 
+# Extract only HPV negative data
+neg <- data_lina[ , data_lina$hpv_status == "neg"]
+table(neg$hpv_status)
+
+neg$stage <- data_old$tumor_stage[match(neg$sample_id, data_old$sample_id)]
+neg$grade <- data_old$tumor_grade[match(neg$sample_id, data_old$sample_id)]
+
+neg$molsub <- data_old$subtype_m_rna[match(neg$sample_id, data_old$sample_id)]
+```
+
+## GSVA TCGA analysis {.tabset .tabset-fade .tabset-pills}
+
+Load Diffex Sigs
+
+```{r}
+`%ni%` <- Negate(`%in%`)
+eset <- readRDS(file.path(nqoPATH, "mmkhan_e7386/data/2023_06_08_hnscc_eset_corrected.rds"))
+eset <- eset[, eset$hpv_status == "negative"]
+eset <- eset[, eset$sample_type != "Solid Tissue Normal"]
+eset <- eset[, !eset$tumor_stage %in% c("not reported", "stage ivc")]
+eset <- eset[, !eset$tumor_grade %in% c(NA)]
+               
+diff_list_nqo <- readRDS(file.path(nqoPATH, "mmkhan_e7386/results/06_08_4nqo_e7386_epi_sigs.rds"))
+diff_list_nqo <- sapply(diff_list_nqo, toupper)
+
+
+diff_list_e7386 <- c(diff_list_nqo)
+diff_list_e7386 <- diff_list_e7386[c("nqo.vs.ctrl.up", "e7386_25.vs.nqo.up", "e7386_50.vs.nqo.up", "nqo.vs.ctrl.dn",  "e7386_25.vs.nqo.dn", "e7386_50.vs.nqo.dn")]
+```
+
+### GSVA
+
+```{r}
+nqo_gsva <- GSVA::gsva(exprs(eset), gset.idx.list = diff_list_e7386)
+nqo_gsva_mod <- data.frame(t(nqo_gsva))
+
+nqo_gsva_mod$nqo.diff <- nqo_gsva_mod$nqo.vs.ctrl.up - nqo_gsva_mod$nqo.vs.ctrl.dn
+nqo_gsva_mod$e7386.25.diff <- nqo_gsva_mod$e7386_25.vs.nqo.dn - nqo_gsva_mod$e7386_25.vs.nqo.up
+nqo_gsva_mod$e7386.50.diff <- nqo_gsva_mod$e7386_50.vs.nqo.dn - nqo_gsva_mod$e7386_50.vs.nqo.up
+```
+
+
+```{r}
+gsvaplot <- function(df, condn){
+  gsvaResT <- df
+  condition <- condn
+  cond <- as.list(gsvaResT[, condition ,drop = FALSE])
+  gsvaResT[, paste(condition, collapse = "_")] <- cond
+  gsvaResFlat <- reshape2::melt(gsvaResT, id.vars = paste(condition,
+                                                          collapse = "_"),
+                                variable.name = "pathway")
+  g1 <-  ggplot2::ggplot(gsvaResFlat, ggplot2::aes_string(
+    x = paste(condn), y = "value",
+    color = "pathway")) +
+    ggplot2::geom_boxplot(outlier.shape = NA) +
+    ggpubr::stat_compare_means(method = "anova",  label = 'p.format', vjust = 0.75)+
+    ggplot2::theme_bw()+
+    ggplot2::facet_wrap(~paste(condn), scales = "free_y", ncol = 5 ) +
+    ggplot2::theme(strip.text.x = ggplot2::element_text(size = 10))+
+    ggplot2::theme(axis.text.x = ggplot2::element_text(angle = 45, hjust = 1, size = 8))+
+    ggplot2::geom_hline(yintercept=0, linetype="dashed", color = "red")+
+   #ggplot2::theme(legend.position="none")+
+    ggplot2::ylab("GSVA Score")
+g1
+}
+```
+
+### Stage
+
+```{r}
+nqo_gsva_mod1 <- nqo_gsva_mod
+nqo_gsva_mod1$stage <- eset$tumor_stage[match(eset$fid, rownames(nqo_gsva_mod))]
+nqo_gsva_mod1 <- nqo_gsva_mod1[!nqo_gsva_mod1$stage %in% c("not reported", "stage ivc"), ]
+
+nqo_gsva_mod1 <- nqo_gsva_mod1[complete.cases(nqo_gsva_mod1),]
+gsvaplot(df = nqo_gsva_mod1, condn = "stage")
+
+nqo_gsva_mod_sub1 <- nqo_gsva_mod1[, c(colnames(nqo_gsva_mod1)[grepl(x = colnames(nqo_gsva_mod1), pattern = "up")], "stage")]
+gsvaplot(df = nqo_gsva_mod_sub1, condn = "stage")
+
+nqo_gsva_mod_sub2 <- nqo_gsva_mod1[, c(colnames(nqo_gsva_mod1)[grepl(x = colnames(nqo_gsva_mod1), pattern = "dn")], "stage")]
+gsvaplot(df = nqo_gsva_mod_sub2, condn = "stage")
+
+nqo_gsva_mod_sub3 <- nqo_gsva_mod1[, c(colnames(nqo_gsva_mod1)[grepl(x = colnames(nqo_gsva_mod1), pattern = "diff")], "stage")]
+gsvaplot(df = nqo_gsva_mod_sub3, condn = "stage")
+```
+
+### Grade
+
+```{r}
+nqo_gsva_mod2 <- nqo_gsva_mod
+nqo_gsva_mod2$grade <- eset$tumor_grade[match(eset$fid, rownames(nqo_gsva_mod2))]
+
+nqo_gsva_mod2 <- nqo_gsva_mod2[complete.cases(nqo_gsva_mod2),]
+gsvaplot(df = nqo_gsva_mod2, condn = "grade")
+
+nqo_gsva_mod_sub1 <- nqo_gsva_mod2[, c(colnames(nqo_gsva_mod2)[grepl(x = colnames(nqo_gsva_mod2), pattern = "up")], "grade")]
+gsvaplot(df = nqo_gsva_mod_sub1, condn = "grade")
+
+nqo_gsva_mod_sub2 <- nqo_gsva_mod2[, c(colnames(nqo_gsva_mod2)[grepl(x = colnames(nqo_gsva_mod2), pattern = "dn")], "grade")]
+gsvaplot(df = nqo_gsva_mod_sub2, condn = "grade")
+
+nqo_gsva_mod_sub3 <- nqo_gsva_mod2[, c(colnames(nqo_gsva_mod2)[grepl(x = colnames(nqo_gsva_mod2), pattern = "diff")], "grade")]
+gsvaplot(df = nqo_gsva_mod_sub3, condn = "grade")
+```
+
+### Mol. Subtype
+
+```{r}
+nqo_gsva_mod3 <- nqo_gsva_mod
+nqo_gsva_mod3$molsub <- eset$subtype_m_rna[match(eset$fid, rownames(nqo_gsva_mod3))]
+nqo_gsva_mod3 <- nqo_gsva_mod3[complete.cases(nqo_gsva_mod3),]
+gsvaplot(df = nqo_gsva_mod3, condn = "molsub")
+
+nqo_gsva_mod_sub1 <- nqo_gsva_mod3[, c(colnames(nqo_gsva_mod3)[grepl(x = colnames(nqo_gsva_mod3), pattern = "up")], "molsub")]
+gsvaplot(df = nqo_gsva_mod_sub1, condn = "molsub")
+
+nqo_gsva_mod_sub2 <- nqo_gsva_mod3[, c(colnames(nqo_gsva_mod3)[grepl(x = colnames(nqo_gsva_mod3), pattern = "dn")], "molsub")]
+gsvaplot(df = nqo_gsva_mod_sub2, condn = "molsub")
+
+nqo_gsva_mod_sub3 <- nqo_gsva_mod3[, c(colnames(nqo_gsva_mod3)[grepl(x = colnames(nqo_gsva_mod3), pattern = "diff")], "molsub")]
+gsvaplot(df = nqo_gsva_mod_sub3, condn = "molsub")
+```
+
+## Survival Analysis {.tabset .tabset-fade .tabset-pills}
+
+```{r}
+# use gsva to assign each sample a score for each signature.
+# add back GSVA scores onto the eset
+
+pData(eset) <- cbind(data.frame(pData(eset)[!names(pData(eset)) %in% names(nqo_gsva_mod)]), nqo_gsva_mod)
+
+# add survival info to tcgadata
+# pData(eset1) <- pData(eset1) %>% mutate(time = case_when(days_to_death != "--" ~ eset1$days_to_death, 
+#                                                                days_to_death == "--" ~ eset1$days_to_last_follow_up))
+
+pData(eset) <- pData(eset) %>% mutate(time = case_when(!is.na(days_to_death) ~ eset$days_to_death, 
+                                                               is.na(days_to_death) ~ eset$days_to_last_follow_up))
+
+
+```
+
+```{r}
+eset$vital_status1 <- ifelse(eset$vital_status == "Alive", 1, 2)
+
+#5 year cutoff
+pData(eset) <- pData(eset) %>% mutate(x5year = case_when(vital_status == "Alive" ~ as.character(eset$days_to_last_follow_up),
+                                                                 (vital_status == "Alive" & as.numeric(days_to_last_follow_up) >= 1825.0) ~ as.character(1825),
+                                                                 (vital_status == "Dead" & as.numeric(days_to_death) < 1825.0) ~ as.character(eset$time),
+                                                                 (vital_status == "Dead" & as.numeric(days_to_death) >= 1825.0) ~ as.character(1825))
+)
+pData(eset) <- pData(eset) %>% mutate(vital_status5 = case_when(vital_status == "Alive" ~ 1,
+                                                                        (vital_status == "Dead" & as.numeric(days_to_death) < 1825.0) ~ 2,
+                                                                        (vital_status == "Dead" & as.numeric(days_to_death) >= 1825.0) ~ 1)
+)
+
+#function to add gsva scores to pData slot of eset 
+addgsvadata <- function(obj) {
+  for (sig in c("e7386_25.vs.nqo.dn", "e7386_50.vs.nqo.dn", "nqo.diff", "e7386.25.diff", "e7386.50.diff" )) {
+    print(sig)
+    threshold <- median(pData(obj)[, paste(sig)])
+    print(threshold)
+    #obj[[, paste0(sig,"val")]] <- pData(obj)[, paste(sig)]
+    pData(obj)[, paste0(sig,"stat")] <- with(obj, ifelse(pData(obj)[, paste(sig)] <= threshold, "low", "high"))
+  }
+  return(obj)
+}
+#add gsva to eset Pdata
+test <- addgsvadata(eset)
+
+```
+
+### KM
+
+```{r}
+#kaplan meier curves - less robust because doesn't take into account age
+ggsurvplot(
+  fit = survfit(Surv(as.numeric(test$time), test$vital_status1) ~ test$e7386_25.vs.nqo.dnstat),
+  data = test, 
+  xlab = "Days", 
+  ylab = "H Overall survival probability",
+  conf.int = TRUE,
+  pval = TRUE)
+
+ggsurvplot(
+  fit = survfit(Surv(as.numeric(test$time), test$vital_status1) ~ test$e7386_50.vs.nqo.dnstat),
+  data = test, 
+  xlab = "Days", 
+  ylab = "H Overall survival probability",
+  conf.int = TRUE,
+  pval = TRUE)
+
+
+ggsurvplot(
+  fit = survfit(Surv(as.numeric(test$time), test$vital_status1) ~ test$nqo.diffstat),
+  data = test, 
+  xlab = "Days", 
+  ylab = "H Overall survival probability",
+  conf.int = TRUE,
+  pval = TRUE)
+
+ggsurvplot(
+  fit = survfit(Surv(as.numeric(test$time), test$vital_status1) ~ test$e7386.25.diffstat),
+  data = test, 
+  xlab = "Days", 
+  ylab = "H Overall survival probability",
+  conf.int = TRUE,
+  pval = TRUE)
+
+ggsurvplot(
+  fit = survfit(Surv(as.numeric(test$time), test$vital_status1) ~ test$e7386.50.diffstat),
+  data = test, 
+  xlab = "Days", 
+  ylab = "H Overall survival probability",
+  conf.int = TRUE,
+  pval = TRUE)
+
+
+
+cox_mod <- coxph(Surv(as.numeric(test$time), test$vital_status1) ~ test$e7386.50.diffstat,
+                 data=test, x=TRUE)
+
+test$e7386.50.diffstat <- factor(test$e7386.50.diffstat)
+test$vital_status1 <- as.numeric(test$vital_status1)
+# using g-computation with confidence intervals
+adjsurv <- adjustedsurv(data=pData(test),
+                        variable="e7386.50.diffstat",
+                        ev_time="time",
+                        event="vital_status1",
+                        method="direct",
+                        outcome_model=cox_mod,
+                        conf_int=TRUE,
+                        bootstrap=FALSE)
+plot(adjsurv, conf_int=TRUE)
+
+```
+
+```{r}
+## example
+library(adjustedCurves)
+library(survival)
+library(riskRegression)
+library(pammtools)
+
+# just used to make the example reproducible
+set.seed(42)
+
+# simulate some example data
+sim_dat <- sim_confounded_surv(n=50, max_t=1.2)
+sim_dat$group <- as.factor(sim_dat$group)
+
+# outcome model
+cox_mod <- coxph(Surv(time, event) ~ x1 + x2 + x4 + x5 + group,
+                 data=sim_dat, x=TRUE)
+
+# using g-computation with confidence intervals
+adjsurv <- adjustedsurv(data=sim_dat,
+                        variable="group",
+                        ev_time="time",
+                        event="event",
+                        method="direct",
+                        outcome_model=cox_mod,
+                        conf_int=TRUE,
+                        bootstrap=FALSE)
+plot(adjsurv, conf_int=TRUE, )
+
+```
+
+
+### CoxPH {.tabset .tabset-fade .tabset-pills}
+
+#### Status + Age {.tabset .tabset-fade .tabset-pills}
+
+```{r}
+#add age metadata in years
+test$age <- as.numeric(test$age_at_diagnosis)/365
+#add age stratification -- this is based off cuttoffs Anthony S wanted to use, you may want to skip or change this.
+threshold1 <- 80
+theshold2 <- 30
+test$agestat <- with(test, ifelse(test$age <= threshold1, "young", "old"))
+test$agestat1 <- with(test, ifelse(test$age >= theshold2 & test$agestat == 'young', "mid", test$agestat))
+
+test$agestat1 <- factor(test$agestat1, levels = c("young", "mid", "old"))
+```
+
+##### E7386_25 dn
+
+```{r}
+#with age as covariate and as stratifying variable
+test$e7386_25.vs.nqo.dnstat <- factor(test$e7386_25.vs.nqo.dnstat, levels = c("low", "high"))
+coxphres <- coxph(formula = Surv(as.numeric(test$time), test$vital_status1) ~ test$e7386_25.vs.nqo.dnstat + test$age + strata(test$agestat1))
+summary(coxphres)
+```
+
+##### E7386_50 dn
+
+```{r}
+#with age as covariate and as stratifying variable
+test$e7386_50.vs.nqo.dnstat <- factor(test$e7386_50.vs.nqo.dnstat, levels = c("low", "high"))
+coxphres <- coxph(formula = Surv(as.numeric(test$time), test$vital_status1) ~ test$e7386_50.vs.nqo.dnstat + test$age + strata(test$agestat1))
+summary(coxphres)
+```
+
+
+##### 4NQO diff 
+
+```{r}
+#with age as covariate and as stratifying variable
+coxphres <- coxph(formula = Surv(as.numeric(test$time), test$vital_status1) ~ test$nqo.diffstat + test$age + strata(test$agestat1))
+summary(coxphres)
+```
+
+##### 4NQO + E7386_25
+
+```{r}
+coxphres <- coxph(formula = Surv(as.numeric(test$time), test$vital_status1) ~ test$e7386.25.diffstat + test$age + strata(test$agestat1))
+summary(coxphres)
+```
+
+##### 4NQO + E7386_50
+
+```{r}
+coxphres <- coxph(formula = Surv(as.numeric(test$time), test$vital_status1) ~ test$e7386.50.diffstat + test$age + strata(test$agestat1))
+summary(coxphres)
+```
+
+#### Status {.tabset .tabset-fade .tabset-pills}
+
+##### E7386_25 dn
+
+```{r}
+coxphres2 <- coxph(formula = Surv(as.numeric(test$time), test$vital_status1) ~ test$e7386_25.vs.nqo.dnstat + strata(test$agestat1))
+summary(coxphres2)
+```
+
+##### E7386_50 dn
+
+```{r}
+coxphres2 <- coxph(formula = Surv(as.numeric(test$time), test$vital_status1) ~ test$e7386_50.vs.nqo.dnstat + strata(test$agestat1))
+summary(coxphres2)
+```
+
+
+##### 4NQO
+
+```{r}
+coxphres2 <- coxph(formula = Surv(as.numeric(test$time), test$vital_status1) ~ test$nqo.diffstat + strata(test$agestat1))
+summary(coxphres2)
+```
+
+##### 4NQO + E7386_25
+
+```{r}
+coxphres2 <- coxph(formula = Surv(as.numeric(test$time), test$vital_status1) ~ test$e7386.25.diffstat + strata(test$agestat1))
+summary(coxphres2)
+```
+
+##### 4NQO + E7386_50
+
+```{r}
+coxphres2 <- coxph(formula = Surv(as.numeric(test$time), test$vital_status1) ~ test$e7386.50.diffstat + strata(test$agestat1))
+summary(coxphres2)
+```
+
+# Stress signatures
+
+unique to cluster 4 and 11
+
+```{r}
+fcm_stress <- read.csv(file = file.path(nqoPATH, "mmkhan_e7386/results/stress_unique_genes_per_clust.csv"))
+
+fcm_stress_list <- apply(fcm_stress, 2, function(x) list(x))
+fcm_stress_list$X <- NULL
+#remove NAs
+fcm_stress_list_mod <- lapply(fcm_stress_list, function(x) unique(x[[1]])[!is.na(unique(x[[1]]))])
+
+
+```
+```{r}
+gsva_res_stress_411 <- GSVA::gsva(exprs(eset), gset.idx.list = fcm_stress_list_mod)
+gsva_res_stress_411_mod <- data.frame(t(gsva_res_stress_411))
+```
+
+
+```{r}
+# use gsva to assign each sample a score for each signature.
+# add back GSVA scores onto the eset
+
+pData(eset) <- cbind(data.frame(pData(eset)[!names(pData(eset)) %in% names(gsva_res_stress_411_mod)]), gsva_res_stress_411_mod)
+
+```
+
+```{r}
+# eset$vital_status1 <- ifelse(eset$vital_status == "Alive", 1, 2)
+# 
+# #5 year cutoff
+# pData(eset) <- pData(eset) %>% mutate(x5year = case_when(vital_status == "Alive" ~ as.character(eset$days_to_last_follow_up),
+#                                                                  (vital_status == "Alive" & as.numeric(days_to_last_follow_up) >= 1825.0) ~ as.character(1825),
+#                                                                  (vital_status == "Dead" & as.numeric(days_to_death) < 1825.0) ~ as.character(eset$time),
+#                                                                  (vital_status == "Dead" & as.numeric(days_to_death) >= 1825.0) ~ as.character(1825))
+# )
+# pData(eset) <- pData(eset) %>% mutate(vital_status5 = case_when(vital_status == "Alive" ~ 1,
+#                                                                         (vital_status == "Dead" & as.numeric(days_to_death) < 1825.0) ~ 2,
+#                                                                         (vital_status == "Dead" & as.numeric(days_to_death) >= 1825.0) ~ 1)
+# )
+
+#function to add gsva scores to pData slot of eset 
+addgsvadata <- function(obj) {
+  for (sig in c("clust4_w11", "clust11_w4", "clust11_wo4", "clust4_wo11")) {
+    print(sig)
+    threshold <- median(pData(obj)[, paste(sig)])
+    print(threshold)
+    #obj[[, paste0(sig,"val")]] <- pData(obj)[, paste(sig)]
+    pData(obj)[, paste0(sig,"stat")] <- with(obj, ifelse(pData(obj)[, paste(sig)] <= threshold, "low", "high"))
+  }
+  return(obj)
+}
+#add gsva to eset Pdata
+test <- addgsvadata(eset)
+
+```
+
+
+
+### KM
+
+```{r}
+#kaplan meier curves - less robust because doesn't take into account age
+ggsurvplot(
+  fit = survfit(Surv(as.numeric(test$time), test$vital_status1) ~ test$clust4_wo11stat),
+  data = test, 
+  xlab = "Days", 
+  ylab = "H Overall survival probability",
+  conf.int = TRUE,
+  pval = TRUE)
+
+ggsurvplot(
+  fit = survfit(Surv(as.numeric(test$time), test$vital_status1) ~ test$clust11_wo4stat),
+  data = test, 
+  xlab = "Days", 
+  ylab = "H Overall survival probability",
+  conf.int = TRUE,
+  pval = TRUE)
+
+ggsurvplot(
+  fit = survfit(Surv(as.numeric(test$time), test$vital_status1) ~ test$clust4_w11stat),
+  data = test, 
+  xlab = "Days", 
+  ylab = "H Overall survival probability",
+  conf.int = TRUE,
+  pval = TRUE)
+
+ggsurvplot(
+  fit = survfit(Surv(as.numeric(test$time), test$vital_status1) ~ test$clust11_w4stat),
+  data = test, 
+  xlab = "Days", 
+  ylab = "H Overall survival probability",
+  conf.int = TRUE,
+  pval = TRUE)
+
+```
+
+
+### CoxPH {.tabset .tabset-fade .tabset-pills}
+
+#### Status + Age {.tabset .tabset-fade .tabset-pills}
+
+```{r}
+#add age metadata in years
+test$age <- as.numeric(test$age_at_diagnosis)/365
+#add age stratification -- this is based off cuttoffs Anthony S wanted to use, you may want to skip or change this.
+threshold1 <- 80
+theshold2 <- 30
+test$agestat <- with(test, ifelse(test$age <= threshold1, "young", "old"))
+test$agestat1 <- with(test, ifelse(test$age >= theshold2 & test$agestat == 'young', "mid", test$agestat))
+```
+
+##### 4
+
+```{r}
+#with age as covariate and as stratifying variable
+coxphres <- coxph(formula = Surv(as.numeric(test$time), test$vital_status1) ~ test$clust4_wo11stat + test$age + strata(test$agestat1))
+summary(coxphres)
+```
+
+##### 11
+
+```{r}
+coxphres <- coxph(formula = Surv(as.numeric(test$time), test$vital_status1) ~ test$clust11_wo4stat + test$age + strata(test$agestat1))
+summary(coxphres)
+```
+
+##### 4
+
+```{r}
+coxphres <- coxph(formula = Surv(as.numeric(test$time), test$vital_status1) ~ test$clust4_w11stat + test$age + strata(test$agestat1))
+summary(coxphres)
+```
+
+
+##### 11
+
+```{r}
+coxphres <- coxph(formula = Surv(as.numeric(test$time), test$vital_status1) ~ test$clust11_w4stat + test$age + strata(test$agestat1))
+summary(coxphres)
+```
+
+
+#### Status {.tabset .tabset-fade .tabset-pills}
+
+##### 4
+
+```{r}
+coxphres2 <- coxph(formula = Surv(as.numeric(test$time), test$vital_status1) ~ test$clust4_wo11stat + strata(test$agestat1))
+summary(coxphres2)
+```
+
+##### 11
+
+```{r}
+coxphres2 <- coxph(formula = Surv(as.numeric(test$time), test$vital_status1) ~ test$clust11_wo4stat + strata(test$agestat1))
+summary(coxphres2)
+```
+
+##### 4 w/ 11
+
+```{r}
+coxphres2 <- coxph(formula = Surv(as.numeric(test$time), test$vital_status1) ~ test$clust4_w11stat + strata(test$agestat1))
+summary(coxphres2)
+```
+
+##### 11 wo/ 4
+
+```{r}
+coxphres2 <- coxph(formula = Surv(as.numeric(test$time), test$vital_status1) ~ test$clust11_w4stat + strata(test$agestat1))
+summary(coxphres2)
+```
+
+
+

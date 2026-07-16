@@ -1,0 +1,323 @@
+---
+title: "LINCS signatureSearch Querying"
+subtitle: "ICG-001 and E7386 signatures"
+author: "Stefano Monti"
+output:
+  html_document:
+    theme: united
+    code_folding: show
+    css: style.css
+    toc: yes
+---
+
+```{r global, echo=FALSE}
+knitr::opts_chunk$set(message=FALSE, warning=FALSE, fig.path='../results/figures/')
+```
+
+E7386 and ICG-001 are Wnt/beta-catenin/CBP pathway inhibitors. Here we use their HSC3 transcriptional signatures as LINCS queries to ask two related questions:
+
+1. Which LINCS perturbations induce expression programs that are similar to, or opposite from, the E7386 and ICG-001 signatures?
+2. How similar are E7386 and ICG-001 to each other when represented by their LINCS perturbation-similarity profiles?
+
+Positive LINCS connectivity scores indicate that a perturbation resembles the query signature, whereas negative scores indicate an inverse relationship. We focus on `NCS`, the normalized connectivity score for perturbation/cell-line signatures, and `NCSct`, the LINCS cell-line summarized score that gives one value per perturbation.
+
+```{r settings}
+# Load analysis packages and configure project paths.
+library(OmicSignature)
+library(signatureSearch)
+
+PATH <- file.path(Sys.getenv("MLAB"),"projects/oralcancer/bcat_cbp_inhibition/4nqo/smonti/")
+options(box.path = file.path(Sys.getenv("CBMGIT"), "MLscripts"))
+box::use(R/MLmisc)
+
+## control variables
+do_save <- TRUE
+use_cached <- TRUE
+```
+
+# Load signatures
+
+The query signatures were generated in the previous step. Each object contains ordered up- and down-regulated gene symbols for the E7386 or ICG-001 response in HSC3 cells.
+
+```{r load.signatures}
+# Read filtered HSC3 up/down gene sets saved by the previous notebook.
+e7386_query <- readRDS(file = file.path(PATH, "workdir/e7386_cmap_query.Rds"))
+icg001_query <- readRDS(file.path(PATH, "workdir/icg001_cmap_query.Rds"))
+```
+
+# Run LINCS `signatureSearch`
+
+We query the LINCS L1000 resource exposed through `signatureSearchData`. The LINCS database stores moderated z-score signatures and `gess_lincs()` returns `WTCS`, `NCS`, and `NCSct` scores.
+
+## Load LINCS Database
+
+```{r eval=!use_cached}
+# Retrieve the pre-built LINCS L1000 HDF5 reference database.
+library(ExperimentHub)
+library(rhdf5)
+eh <- ExperimentHub::ExperimentHub()
+
+# LINCS L1000: moderated z-score signatures.
+lincs <- eh[["EH3226"]]
+lincs_gene_ids <- rhdf5::h5read(lincs, "rownames")
+```
+
+```{r eval=use_cached, echo=FALSE}
+# Use pre-computed LINCS query and result objects.
+e7386_lincs_query_sig <- readRDS(file.path(PATH, "workdir/e7386_signatureSearch_lincs_query.Rds"))
+icg001_lincs_query_sig <- readRDS(file.path(PATH, "workdir/icg001_signatureSearch_lincs_query.Rds"))
+e7386_lincs_query_res <- readRDS(file.path(PATH, "workdir/e7386_signatureSearch_lincs_res.Rds"))
+icg001_lincs_query_res <- readRDS(file.path(PATH, "workdir/icg001_signatureSearch_lincs_res.Rds"))
+e7386_lincs_query_tbl <- readRDS(file.path(PATH, "workdir/e7386_signatureSearch_lincs_tbl.Rds"))
+icg001_lincs_query_tbl <- readRDS(file.path(PATH, "workdir/icg001_signatureSearch_lincs_tbl.Rds"))
+e7386_lincs_ncsct_tbl <- readRDS(file.path(PATH, "workdir/e7386_signatureSearch_lincs_ncsct_tbl.Rds"))
+icg001_lincs_ncsct_tbl <- readRDS(file.path(PATH, "workdir/icg001_signatureSearch_lincs_ncsct_tbl.Rds"))
+```
+
+## Build LINCS Queries
+
+For each inhibitor, we build a bidirectional query signature with exactly 150 up and 150 down Entrez IDs that are present in the LINCS database. We start with a larger pool of symbols because some symbols do not map to Entrez IDs or are absent from LINCS.
+
+```{r eval=!use_cached}
+# Use the top 150 mapped LINCS genes per direction.
+top_n_markers <- 150
+mapping_pool_size <- 300
+
+map_top_entrez <- function(symbols, ref_gene_ids, n = 150, pool_size = 300) {
+  # Over-select symbols first so unmapped or unavailable genes do not shrink the query.
+  symbols <- symbols |>
+    unique() |>
+    head(pool_size)
+
+  # Convert HGNC symbols to Entrez IDs required by signatureSearch.
+  entrez <- AnnotationDbi::mapIds(
+    org.Hs.eg.db::org.Hs.eg.db,
+    keys = symbols,
+    column = "ENTREZID",
+    keytype = "SYMBOL",
+    multiVals = "first"
+  )
+
+  # Keep only unique Entrez IDs represented in the LINCS reference database.
+  entrez <- unique(unname(stats::na.omit(entrez)))
+  entrez <- entrez[entrez %in% ref_gene_ids]
+  if (length(entrez) < n) {
+    stop("Only ", length(entrez), " symbols mapped to Entrez IDs in LINCS; need ", n, ".")
+  }
+  head(entrez, n)
+}
+
+top_signature_search_query <- function(query, ref_gene_ids, n = 150, pool_size = 300) {
+  # Split the saved query object into up- and down-regulated symbol vectors.
+  up_symbols <- query[grep("\\.up$", names(query))][[1]] |>
+    unique()
+  down_symbols <- query[grep("\\.dn$", names(query))][[1]] |>
+    unique()
+
+  # Return the list structure expected by qSig for the LINCS method.
+  list(
+    upset = map_top_entrez(up_symbols, ref_gene_ids = ref_gene_ids, n = n, pool_size = pool_size),
+    downset = map_top_entrez(down_symbols, ref_gene_ids = ref_gene_ids, n = n, pool_size = pool_size)
+  )
+}
+
+# Construct LINCS-compatible queries for both inhibitors.
+e7386_lincs_query_sig <- top_signature_search_query(
+  e7386_query,
+  ref_gene_ids = lincs_gene_ids,
+  n = top_n_markers,
+  pool_size = mapping_pool_size
+)
+icg001_lincs_query_sig <- top_signature_search_query(
+  icg001_query,
+  ref_gene_ids = lincs_gene_ids,
+  n = top_n_markers,
+  pool_size = mapping_pool_size
+)
+
+data.frame(
+  # Confirm that each LINCS query uses 150 genes per direction.
+  compound = c("E7386", "ICG001"),
+  up = c(length(e7386_lincs_query_sig$upset), length(icg001_lincs_query_sig$upset)),
+  down = c(length(e7386_lincs_query_sig$downset), length(icg001_lincs_query_sig$downset))
+)
+```
+
+## LINCS Search
+
+The LINCS search compares each inhibitor query against L1000 perturbation signatures. `NCS` is the normalized connectivity score for each perturbation/cell-line signature. `NCSct` summarizes scores across cell lines for each perturbation.
+
+```{r eval=!use_cached}
+run_lincs_signature_search <- function(query, refdb = lincs, ref_gene_ids, n = 150, pool_size = 300) {
+  # Build a LINCS-compatible qSig and run the LINCS weighted connectivity search.
+  qsig <- qSig(
+    query = top_signature_search_query(query, ref_gene_ids = ref_gene_ids, n = n, pool_size = pool_size),
+    gess_method = "LINCS",
+    refdb = refdb
+  )
+
+  # tau=FALSE avoids the more expensive Tau calculation; NCSct is still returned.
+  gess_lincs(qSig = qsig, sortby = "NCSct", tau = FALSE)
+}
+
+# Run LINCS searches for E7386 and ICG-001.
+e7386_lincs_query_res <- run_lincs_signature_search(
+  query = e7386_query,
+  refdb = lincs,
+  ref_gene_ids = lincs_gene_ids,
+  n = top_n_markers,
+  pool_size = mapping_pool_size
+)
+icg001_lincs_query_res <- run_lincs_signature_search(
+  query = icg001_query,
+  refdb = lincs,
+  ref_gene_ids = lincs_gene_ids,
+  n = top_n_markers,
+  pool_size = mapping_pool_size
+)
+
+# Extract per-signature LINCS results.
+e7386_lincs_query_tbl <- result(e7386_lincs_query_res)
+icg001_lincs_query_tbl <- result(icg001_lincs_query_res)
+
+# Keep one row per perturbation using the cell-line summarized NCSct score.
+e7386_lincs_ncsct_tbl <- e7386_lincs_query_tbl |>
+  dplyr::distinct(pert, type, NCSct, .keep_all = TRUE) |>
+  dplyr::arrange(desc(abs(NCSct)))
+icg001_lincs_ncsct_tbl <- icg001_lincs_query_tbl |>
+  dplyr::distinct(pert, type, NCSct, .keep_all = TRUE) |>
+  dplyr::arrange(desc(abs(NCSct)))
+```
+
+```{r}
+# Preview the strongest LINCS perturbation-level matches for each inhibitor.
+list(
+  E7386 = head(e7386_lincs_ncsct_tbl[, c("pert", "cell", "type", "NCS", "NCSct")]),
+  ICG001 = head(icg001_lincs_ncsct_tbl[, c("pert", "cell", "type", "NCS", "NCSct")])
+)
+```
+
+## Similarity Between E7386 and ICG-001 Profiles
+
+Beyond ranking individual hits, we compare E7386 and ICG-001 by correlating their LINCS perturbation-similarity profiles. If the two inhibitors have similar mechanisms or downstream consequences, then perturbations that score highly for E7386 should tend to score highly for ICG-001 as well.
+
+```{r}
+compare_similarity_profiles <- function(tbl_a, tbl_b, score_col, by_cols) {
+  # Join two result tables on shared perturbation identifiers and compare scores.
+  joined <- dplyr::inner_join(
+    tbl_a |> dplyr::select(dplyr::all_of(c(by_cols, score_col))),
+    tbl_b |> dplyr::select(dplyr::all_of(c(by_cols, score_col))),
+    by = by_cols,
+    suffix = c("_e7386", "_icg001")
+  )
+  score_e7386 <- paste0(score_col, "_e7386")
+  score_icg001 <- paste0(score_col, "_icg001")
+  df <- data.frame(
+    score = score_col,
+    n = nrow(joined),
+    pearson = stats::cor(joined[[score_e7386]], joined[[score_icg001]],
+                         method = "pearson", use = "complete.obs"),
+    spearman = stats::cor(joined[[score_e7386]], joined[[score_icg001]],
+                          method = "spearman", use = "complete.obs")
+  )
+  p1 <- ggplot2::ggplot(joined, ggplot2::aes(
+    x = .data[[score_e7386]], y = .data[[score_icg001]]
+  )) +
+#    ggplot2::geom_point(ggplot2::aes(col = cell)) +
+    ggplot2::geom_point() +
+    ggplot2::geom_smooth(method = lm)
+
+  return(list(comparison = df, plot = p1))
+}
+
+# Compare full perturbation/cell-line profiles using NCS.
+lincs_profile_similarity <- compare_similarity_profiles(
+  e7386_lincs_query_tbl,
+  icg001_lincs_query_tbl,
+  score_col = "NCS",
+  by_cols = c("pert", "cell", "type")
+)
+
+# Compare perturbation-level profiles using NCSct.
+lincs_ncsct_profile_similarity <- compare_similarity_profiles(
+  e7386_lincs_ncsct_tbl,
+  icg001_lincs_ncsct_tbl,
+  score_col = "NCSct",
+  by_cols = c("pert", "type")
+)
+
+dplyr::bind_rows(
+  cbind(database = "LINCS", level = "perturbation-cell", lincs_profile_similarity$comparison),
+  cbind(database = "LINCS", level = "perturbation", lincs_ncsct_profile_similarity$comparison)
+)
+
+lincs_profile_similarity$plot
+lincs_ncsct_profile_similarity$plot
+```
+
+## Mechanism-of-Action Summaries
+
+The LINCS results include `MOAss`, a semicolon-delimited mechanism-of-action annotation for some perturbagens. To identify mechanisms that are collectively similar or opposite to each inhibitor signature, we remove missing MOA annotations, split multi-MOA entries, and average `NCSct` by MOA.
+
+```{r}
+summarize_ncsct_by_moa <- function(tbl) {
+  tbl |>
+    # Restrict to perturbagens with mechanism-of-action annotations.
+    tidyr::drop_na(MOAss) |>
+    dplyr::filter(MOAss != "") |>
+    # Expand semicolon-delimited MOA annotations to one MOA per row.
+    tidyr::separate_longer_delim(MOAss, delim = ";") |>
+    dplyr::mutate(MOAss = trimws(MOAss)) |>
+    dplyr::filter(MOAss != "") |>
+    dplyr::group_by(MOAss) |>
+    dplyr::summarize(
+      n_perturbations = dplyr::n_distinct(pert),
+      mean_NCSct = mean(NCSct, na.rm = TRUE),
+      median_NCSct = median(NCSct, na.rm = TRUE),
+      max_abs_NCSct = NCSct[which.max(abs(NCSct))],
+      .groups = "drop"
+    ) |>
+    dplyr::arrange(desc(abs(mean_NCSct)))
+}
+e7386_lincs_moa_ncsct_tbl <- summarize_ncsct_by_moa(e7386_lincs_ncsct_tbl)
+icg001_lincs_moa_ncsct_tbl <- summarize_ncsct_by_moa(icg001_lincs_ncsct_tbl)
+
+list(
+  E7386 = head(e7386_lincs_moa_ncsct_tbl),
+  ICG001 = head(icg001_lincs_moa_ncsct_tbl)
+)
+```
+
+# Save
+
+We save the LINCS query signatures, full result objects, result tables, perturbation-level summaries, and E7386-vs-ICG001 profile similarity summaries for downstream inspection without rerunning the full search.
+
+```{r save, echo=do_save, eval=do_save}
+# Save LINCS query signatures and search outputs.
+saveRDS(e7386_lincs_query_sig,
+        file = file.path(PATH, "workdir/e7386_signatureSearch_lincs_query.Rds"))
+saveRDS(icg001_lincs_query_sig,
+        file = file.path(PATH, "workdir/icg001_signatureSearch_lincs_query.Rds"))
+saveRDS(e7386_lincs_query_res,
+        file = file.path(PATH, "workdir/e7386_signatureSearch_lincs_res.Rds"))
+saveRDS(icg001_lincs_query_res,
+        file = file.path(PATH, "workdir/icg001_signatureSearch_lincs_res.Rds"))
+saveRDS(e7386_lincs_query_tbl,
+        file = file.path(PATH, "workdir/e7386_signatureSearch_lincs_tbl.Rds"))
+saveRDS(icg001_lincs_query_tbl,
+        file = file.path(PATH, "workdir/icg001_signatureSearch_lincs_tbl.Rds"))
+saveRDS(e7386_lincs_ncsct_tbl,
+        file = file.path(PATH, "workdir/e7386_signatureSearch_lincs_ncsct_tbl.Rds"))
+saveRDS(icg001_lincs_ncsct_tbl,
+        file = file.path(PATH, "workdir/icg001_signatureSearch_lincs_ncsct_tbl.Rds"))
+saveRDS(e7386_lincs_moa_ncsct_tbl,
+        file = file.path(PATH, "workdir/e7386_signatureSearch_lincs_moa_ncsct_tbl.Rds"))
+saveRDS(icg001_lincs_moa_ncsct_tbl,
+        file = file.path(PATH, "workdir/icg001_signatureSearch_lincs_moa_ncsct_tbl.Rds"))
+
+# Save profile-level similarity summaries comparing E7386 and ICG-001.
+saveRDS(lincs_profile_similarity,
+        file = file.path(PATH, "workdir/e7386_icg001_lincs_profile_similarity.Rds"))
+saveRDS(lincs_ncsct_profile_similarity,
+        file = file.path(PATH, "workdir/e7386_icg001_lincs_ncsct_profile_similarity.Rds"))
+```

@@ -1,0 +1,264 @@
+---
+title: "Epi. Stress Clusters Diffex."
+author: "M. Muzamil Khan"
+date: "2024-09-10"
+output:
+  html_document:
+    code_folding: hide
+    theme: flatly
+    toc: yes
+    toc_float: true
+  html_notebook:
+    code_folding: hide
+    theme: flatly
+    toc: yes
+    toc_float: true
+  pdf_document:
+    toc: yes
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+.libPaths("/restricted/projectnb/montilab-p/personal/mmkhan/R/4.1/")
+
+```
+
+```{r}
+PATH <- "/restricted/projectnb/montilab-p/projects/oralcancer/4nqo/"
+
+library(Seurat)
+library(dplyr)
+library(ggplot2)
+library(VennDiagram)
+```
+
+
+## Epithelial Compartment {.tabset .tabset-fade .tabset-pills}
+
+### Load object
+
+```{r}
+e7386_epi <- readRDS(file = file.path(PATH, "mmkhan_e7386/data/2023_01_09_e7386_epi.rds"))
+```
+
+### Trt diffex in clusters
+
+#### Clust 4
+
+```{r eval=F}
+#clust 4
+e7386_epi_clust4 <- subset(e7386_epi, seurat_clusters==4)
+e7386_epi_clust4$seurat_clusters <- factor(e7386_epi_clust4$seurat_clusters)
+
+Idents(e7386_epi_clust4) <- "treatment"
+
+clust4_nqo_e7386_25 <- FindMarkers(e7386_epi_clust4, ident.1 = "4NQO control", ident.2 = "4NQO + E7386; 25 mg/kg", assay = "RNA", test.use = "MAST")
+clust4_nqo_e7386_50 <- FindMarkers(e7386_epi_clust4, ident.1 = "4NQO control", ident.2 = "4NQO+ E7386; 50 mg/kg", assay = "RNA", test.use = "MAST")
+
+clust4_nqo_e7386_25$gene <-  rownames(clust4_nqo_e7386_25)
+clust4_nqo_e7386_50$gene <-  rownames(clust4_nqo_e7386_50)
+
+clust4_nqo_e7386_25$cond <- rep.int(times  = nrow(clust4_nqo_e7386_25), x = "4NQO control.vs.4NQO + E7386; 25 mg/kg")
+clust4_nqo_e7386_50$cond <- rep.int(times  = nrow(clust4_nqo_e7386_50), x = "4NQO control.vs.4NQO + E7386; 50 mg/kg")
+
+
+```
+
+#### Clust 11
+
+```{r eval=F}
+e7386_epi_clust11 <- subset(e7386_epi, seurat_clusters==11)
+e7386_epi_clust11$seurat_clusters <- factor(e7386_epi_clust11$seurat_clusters)
+
+Idents(e7386_epi_clust11) <- "treatment"
+
+clust11_nqo_e7386_25 <- FindMarkers(e7386_epi_clust11, ident.1 = "4NQO control", ident.2 = "4NQO + E7386; 25 mg/kg", assay = "RNA", test.use = "MAST")
+clust11_nqo_e7386_50 <- FindMarkers(e7386_epi_clust11, ident.1 = "4NQO control", ident.2 = "4NQO+ E7386; 50 mg/kg", assay = "RNA", test.use = "MAST")
+
+clust11_nqo_e7386_25$gene <-  rownames(clust11_nqo_e7386_25)
+clust11_nqo_e7386_50$gene <-  rownames(clust11_nqo_e7386_50)
+
+clust11_nqo_e7386_25$cond <- rep.int(times  = nrow(clust11_nqo_e7386_25), x = "4NQO control.vs.4NQO + E7386; 25 mg/kg")
+clust11_nqo_e7386_50$cond <- rep.int(times  = nrow(clust11_nqo_e7386_50), x = "4NQO control.vs.4NQO + E7386; 50 mg/kg")
+```
+
+#### Save results
+
+```{r eval=F}
+clust4_11_trt <- list(clust4_nqo_e7386_25=clust4_nqo_e7386_25,
+     clust4_nqo_e7386_50=clust4_nqo_e7386_50,
+     clust11_nqo_e7386_25=clust11_nqo_e7386_25,
+     clust11_nqo_e7386_50=clust11_nqo_e7386_50)
+
+saveRDS(clust4_11_trt, file.path(PATH, "mmkhan_e7386/results/2024_09_10_4nqo_e7386_clust411trt.rds"))
+```
+
+```{r}
+clust4_11_trt <- readRDS(file.path(PATH, "mmkhan_e7386/results/2024_09_10_4nqo_e7386_clust411trt.rds"))
+
+clust4_11_trt$clust4_nqo_e7386_25 <- clust4_11_trt$clust4_nqo_e7386_25 %>% mutate(across(c("p_val", "avg_log2FC", "p_val_adj"), round, 8))
+clust4_11_trt$clust4_nqo_e7386_50 <- clust4_11_trt$clust4_nqo_e7386_50 %>% mutate(across(c("p_val", "avg_log2FC", "p_val_adj"), round, 8))
+clust4_11_trt$clust11_nqo_e7386_25 <- clust4_11_trt$clust11_nqo_e7386_25 %>% mutate(across(c("p_val", "avg_log2FC", "p_val_adj"), round, 8))
+clust4_11_trt$clust11_nqo_e7386_50 <- clust4_11_trt$clust11_nqo_e7386_50 %>% mutate(across(c("p_val", "avg_log2FC", "p_val_adj"), round, 8))
+
+DT::datatable(clust4_11_trt$clust4_nqo_e7386_25, caption  = "clust4_nqo_e7386_25")
+DT::datatable(clust4_11_trt$clust4_nqo_e7386_50, caption  = "clust4_nqo_e7386_50")
+DT::datatable(clust4_11_trt$clust11_nqo_e7386_25, caption  = "clust11_nqo_e7386_25")
+DT::datatable(clust4_11_trt$clust11_nqo_e7386_50, caption  = "clust11_nqo_e7386_50")
+```
+
+```{r}
+logfc <- 0
+fdr <- 0.05
+
+clust4_nqo_e7386_25_up <- clust4_11_trt$clust4_nqo_e7386_25 %>%
+  filter(avg_log2FC > logfc & p_val_adj <= fdr) %>%
+  dplyr::select(gene) 
+
+clust4_nqo_e7386_25_dn <- clust4_11_trt$clust4_nqo_e7386_25 %>%
+  filter(avg_log2FC < -logfc & p_val_adj <= fdr) %>%
+  dplyr::select(gene) 
+
+clust4_nqo_e7386_50_up <- clust4_11_trt$clust4_nqo_e7386_50 %>%
+  filter(avg_log2FC > logfc & p_val_adj <= fdr) %>%
+  dplyr::select(gene) 
+
+clust4_nqo_e7386_50_dn <- clust4_11_trt$clust4_nqo_e7386_50 %>%
+  filter(avg_log2FC < -logfc & p_val_adj <= fdr) %>%
+  dplyr::select(gene) 
+
+
+clust11_nqo_e7386_25_up <- clust4_11_trt$clust11_nqo_e7386_25 %>%
+  filter(avg_log2FC > logfc & p_val_adj <= fdr) %>%
+  dplyr::select(gene) 
+
+clust11_nqo_e7386_25_dn <- clust4_11_trt$clust11_nqo_e7386_25 %>%
+  filter(avg_log2FC < -logfc & p_val_adj <= fdr) %>%
+  dplyr::select(gene) 
+
+clust11_nqo_e7386_50_up <- clust4_11_trt$clust11_nqo_e7386_50 %>%
+  filter(avg_log2FC > logfc & p_val_adj <= fdr) %>%
+  dplyr::select(gene) 
+
+clust11_nqo_e7386_50_dn <- clust4_11_trt$clust11_nqo_e7386_50 %>%
+  filter(avg_log2FC < -logfc & p_val_adj <= fdr) %>%
+  dplyr::select(gene) 
+
+
+diff_list <- list("clust4_4nqo.vs.e7386_25.up" = clust4_nqo_e7386_25_up$gene,
+                  "clust4_4nqo.vs.e7386_25.dn" = clust4_nqo_e7386_25_dn$gene,
+                  "clust4_4nqo.vs.e7386_50.up" = clust4_nqo_e7386_50_up$gene,
+                  "clust4_4nqo.vs.e7386_50.dn" = clust4_nqo_e7386_50_dn$gene,
+                  "clust11_4nqo.vs.e7386_25.up" = clust11_nqo_e7386_25_up$gene,
+                  "clust11_4nqo.vs.e7386_25.dn" = clust11_nqo_e7386_25_dn$gene,
+                  "clust11_4nqo.vs.e7386_50.up" = clust11_nqo_e7386_50_up$gene,
+                  "clust11_4nqo.vs.e7386_50.dn" = clust11_nqo_e7386_50_dn$gene
+                  )
+
+```
+
+
+## Check for overlap with human cell lines {.tabset .tabset-fade .tabset-pills}
+
+```{r}
+e7386_human <- readRDS("/restricted/projectnb/montilab-p/projects/oralcancer/4nqo/data/e7386_hnsc_signatures.RDS")
+icg001_human <- readRDS("/restricted/projectnb/montilab-p/projects/oralcancer/4nqo/data/icg001_hnsc_signatures.RDS")
+```
+
+### E7386
+
+```{r}
+ggvenn::ggvenn(list(e7386_25=diff_list$clust4_4nqo.vs.e7386_25.dn, 
+                    e7386_50=diff_list$clust4_4nqo.vs.e7386_50.dn,
+                    e7386.hsc3.dn=e7386_human$e7386.hsc3.dn,
+                    e7386.cal27.dn=e7386_human$e7386.cal27.dn), show_percentage = F, set_name_size = 3) + ggtitle(label = "Clust4")
+
+ggvenn::ggvenn(list(e7386_25=diff_list$clust11_4nqo.vs.e7386_25.dn, 
+                    e7386_50=diff_list$clust11_4nqo.vs.e7386_50.dn,
+                    e7386.hsc3.dn=e7386_human$e7386.hsc3.dn,
+                    e7386.cal27.dn=e7386_human$e7386.cal27.dn), show_percentage = F, set_name_size = 3) + ggtitle(label = "Clust11")
+
+ggvenn::ggvenn(list(e7386_25=diff_list$clust4_4nqo.vs.e7386_25.dn, 
+                    e7386_50=diff_list$clust4_4nqo.vs.e7386_50.dn,
+                    e7386.comb.dn=e7386_human$e7386.comb.dn), show_percentage = F, set_name_size = 3) + ggtitle(label = "Clust4+Comb.dn")
+
+ggvenn::ggvenn(list(e7386_25=diff_list$clust11_4nqo.vs.e7386_25.dn, 
+                    e7386_50=diff_list$clust11_4nqo.vs.e7386_50.dn,
+                    e7386.comb.dn=e7386_human$e7386.comb.dn), show_percentage = F, set_name_size = 3) + ggtitle(label = "Clust11+Comb.dn")
+
+
+```
+
+### ICG001
+
+```{r}
+
+ggvenn::ggvenn(list(e7386_25=diff_list$clust4_4nqo.vs.e7386_25.dn, 
+                    e7386_50=diff_list$clust4_4nqo.vs.e7386_50.dn,
+                    icg001.hsc3.dn=icg001_human$icg001.hsc3.dn,
+                    icg001.cal27.dn=icg001_human$icg001.cal27.dn), show_percentage = F, set_name_size = 3) + ggtitle(label = "Clust4")
+
+ggvenn::ggvenn(list(e7386_25=diff_list$clust11_4nqo.vs.e7386_25.dn, 
+                    e7386_50=diff_list$clust11_4nqo.vs.e7386_50.dn,
+                    icg001.hsc3.dn=icg001_human$icg001.hsc3.dn,
+                    icg001.cal27.dn=icg001_human$icg001.cal27.dn), show_percentage = F, set_name_size = 3) + ggtitle(label = "Clust11")
+
+ggvenn::ggvenn(list(e7386_25=diff_list$clust4_4nqo.vs.e7386_25.dn, 
+                    e7386_50=diff_list$clust4_4nqo.vs.e7386_50.dn,
+                    icg001.comb.dn=icg001_human$icg001.comb.dn), show_percentage = F, set_name_size = 3) + ggtitle(label = "Clust4+Comb.dn")
+
+ggvenn::ggvenn(list(e7386_25=diff_list$clust11_4nqo.vs.e7386_25.dn, 
+                    e7386_50=diff_list$clust11_4nqo.vs.e7386_50.dn,
+                    icg001.comb.dn=icg001_human$icg001.comb.dn), show_percentage = F, set_name_size = 3) + ggtitle(label = "Clust4+Comb.dn")
+
+```
+
+
+```{r eval=F, collapse=T}
+convert_human_to_mouse <- function(gene_list) {
+    output = c()
+    mouse_human_genes = read.csv("https://www.informatics.jax.org/downloads/reports/HOM_MouseHumanSequence.rpt",sep="\t")
+
+    for(gene in gene_list) {
+          class_key = (mouse_human_genes %>% filter(Symbol == gene & Common.Organism.Name == "human"))[['DB.Class.Key']]
+          if( !identical(class_key, integer(0)) ) {
+            human_genes = (mouse_human_genes %>% filter(DB.Class.Key == class_key & Common.Organism.Name=="mouse, laboratory"))[,"Symbol"]
+            for(human_gene in human_genes) {
+                output = rbind(c(gene, human_gene), output)
+            }
+          }
+     }
+     return (output)
+}
+
+#e7386
+e7386_hum_mouse_hsc3 <- list(convert_human_to_mouse(e7386_human$e7386.hsc3.dn))
+#table(toupper(sigs$e7386.hsc3.dn_m[,2]) %in% diff_list_nqo$e7386_50.vs.nqo.dn)
+
+e7386_hum_mouse_cal27 <- list(convert_human_to_mouse(e7386_human$e7386.cal27.dn))
+
+e7386_hum_mouse_comb <- list(convert_human_to_mouse(e7386_human$e7386.comb.dn))
+#table(toupper(sigs$e7386.hsc3.dn_m[,2]) %in% diff_list_nqo$e7386_50.vs.nqo.dn)
+
+#icg001
+icg001_hum_mouse_hsc3 <- list(convert_human_to_mouse(icg001_human$icg001.hsc3.dn))
+icg001_hum_mouse_cal27 <- list(convert_human_to_mouse(icg001_human$icg001.cal27.dn))
+icg001_hum_mouse_comb <- list(convert_human_to_mouse(icg001_human$icg001.comb.dn))
+
+library(stringr)
+ggvenn::ggvenn(list(e7386_25=str_to_title(diff_list$clust4_4nqo.vs.e7386_25.dn), 
+                    e7386_50=str_to_title(diff_list$clust4_4nqo.vs.e7386_50.dn),
+                    e7386.hsc3.dn=e7386_hum_mouse_hsc3[[1]][,2],
+                    e7386.cal27.dn=e7386_hum_mouse_cal27[[1]][,2]), show_percentage = F, set_name_size = 3)
+
+ggvenn::ggvenn(list(e7386_25=str_to_title(diff_list$clust11_4nqo.vs.e7386_25.dn), 
+                    e7386_50=str_to_title(diff_list$clust11_4nqo.vs.e7386_50.dn),
+                    e7386.hsc3.dn=e7386_hum_mouse_hsc3[[1]][,2],
+                    e7386.cal27.dn=e7386_hum_mouse_hsc3[[1]][,2]), show_percentage = F, set_name_size = 3)
+
+ggvenn::ggvenn(list(e7386_25=str_to_title(diff_list$clust4_4nqo.vs.e7386_25.dn), 
+                    e7386_50=str_to_title(diff_list$clust4_4nqo.vs.e7386_50.dn),
+                    e7386.comb.dn=e7386_hum_mouse_comb[[1]][,2],
+                    icg001.comb.dn=e7386_hum_mouse_comb[[1]][,2]), show_percentage = F, set_name_size = 3)
+```
+
