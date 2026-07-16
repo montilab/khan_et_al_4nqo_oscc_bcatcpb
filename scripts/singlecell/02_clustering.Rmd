@@ -141,7 +141,7 @@ DotPlot(seurat_merged, features = top5) +
 ```{r canonical-markers}
 canonical_markers <- list(
   Epithelial    = c("Epcam", "Krt5", "Krt14", "Krt8", "Krt18", "Cdh1"),
-  Fibroblast    = c("Col1a1", "Col1a2", "Vimentin", "Pdgfra", "Fap"),
+  Fibroblast    = c("Col1a1", "Col1a2", "Vim", "Pdgfra", "Fap"),
   Endothelial   = c("Pecam1", "Cdh5", "Vwf", "Eng"),
   T_cell        = c("Cd3e", "Cd3d", "Cd4", "Cd8a", "Foxp3"),
   B_cell        = c("Cd19", "Ms4a1", "Cd79a"),

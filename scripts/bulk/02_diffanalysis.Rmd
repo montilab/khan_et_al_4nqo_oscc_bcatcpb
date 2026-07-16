@@ -51,7 +51,7 @@ table(eSet$Group)
 
 ```{r helper-functions}
 # Hierarchical clustering with optimal leaf ordering (S. Monti / D. Gusenleitner)
-hcopt <- function(d, HC = NULL, method = "ward", members = NULL) {
+hcopt <- function(d, HC = NULL, method = "ward.D", members = NULL) {
   require("cba")
   if (is.null(HC)) {
     HC <- hclust(d, method = method, members = members)
@@ -273,7 +273,8 @@ saveRDS(list(up = cpb_ctrl_up, down = cpb_ctrl_down, full = res_cpb_ctrl),
 
 ```{r venn}
 library(VennDiagram)
-venn.diagram(
+library(grid)
+venn_obj <- venn.diagram(
   x         = list(
     `4NQO vs Ctrl (up)`      = oscc_ctrl_up,
     `CPB vs 4NQO (up)`       = cpb_oscc_up,
@@ -284,6 +285,8 @@ venn.diagram(
   alpha     = 0.5,
   main      = "Overlap of Upregulated DEGs"
 )
+grid.newpage()
+grid.draw(venn_obj)
 ```
 
 ## Session Info

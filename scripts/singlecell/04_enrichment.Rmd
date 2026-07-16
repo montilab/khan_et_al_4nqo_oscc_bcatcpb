@@ -49,6 +49,7 @@ de_cpb_oscc   <- readRDS(file.path(PATH, "results/sc_de_4nqo_cpb_vs_4nqo.RDS"))
 de_cpb_ctrl   <- readRDS(file.path(PATH, "results/sc_de_4nqo_cpb_vs_ctrl.RDS"))
 
 cell_types <- levels(seurat_merged$cell_type)
+n_genes    <- nrow(seurat_merged)   # number of features (genes) in the dataset
 ```
 
 ```{r genesets}
@@ -75,7 +76,7 @@ if (length(epi_up) > 0) {
   hyp_epi_up_H <- hypeR(epi_up,
                           gsets      = msigdb_H,
                           test       = "hypergeometric",
-                          background = nrow(seurat_merged),
+                          background = n_genes,
                           fdr        = 0.05,
                           quiet      = TRUE)
   hyp_dots(hyp_epi_up_H, title = "Epithelial (Up) - 4NQO vs. Control - Hallmarks")
@@ -91,7 +92,7 @@ if (length(epi_down) > 0) {
   hyp_epi_down_H <- hypeR(epi_down,
                             gsets      = msigdb_H,
                             test       = "hypergeometric",
-                            background = nrow(seurat_merged),
+                            background = n_genes,
                             fdr        = 0.05,
                             quiet      = TRUE)
   hyp_dots(hyp_epi_down_H, title = "Epithelial (Down) - 4NQO vs. Control - Hallmarks")
@@ -107,7 +108,7 @@ if (length(epi_up) > 0) {
   hyp_epi_up_C2 <- hypeR(epi_up,
                            gsets      = msigdb_C2,
                            test       = "hypergeometric",
-                           background = nrow(seurat_merged),
+                           background = n_genes,
                            fdr        = 0.05,
                            quiet      = TRUE)
   hyp_dots(hyp_epi_up_C2, title = "Epithelial (Up) - 4NQO vs. Control - KEGG")
@@ -132,7 +133,7 @@ if (length(cpb_epi_up) > 0) {
   hyp_cpb_epi_up_H <- hypeR(cpb_epi_up,
                               gsets      = msigdb_H,
                               test       = "hypergeometric",
-                              background = nrow(seurat_merged),
+                              background = n_genes,
                               fdr        = 0.05,
                               quiet      = TRUE)
   hyp_dots(hyp_cpb_epi_up_H, title = "Epithelial (Up) - 4NQO_CPB vs. 4NQO - Hallmarks")
@@ -148,7 +149,7 @@ if (length(cpb_epi_down) > 0) {
   hyp_cpb_epi_down_H <- hypeR(cpb_epi_down,
                                 gsets      = msigdb_H,
                                 test       = "hypergeometric",
-                                background = nrow(seurat_merged),
+                                background = n_genes,
                                 fdr        = 0.05,
                                 quiet      = TRUE)
   hyp_dots(hyp_cpb_epi_down_H, title = "Epithelial (Down) - 4NQO_CPB vs. 4NQO - Hallmarks")
