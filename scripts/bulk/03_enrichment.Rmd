@@ -156,6 +156,8 @@ hyp_dots(hyp_cpb_oscc_up_C2, title = "4NQO + CPB vs. 4NQO (Up) - KEGG")
 gs_list_H <- lapply(msigdb_H$gsets, function(x) x$genes)
 names(gs_list_H) <- names(msigdb_H$gsets)
 
+# kcdf = "Poisson" is appropriate for raw integer count data from featureCounts.
+# If the eSet has been log-transformed or normalized, use kcdf = "Gaussian" instead.
 gsva_scores_H <- gsva(exprs(eSet),
                        gs_list_H,
                        method    = "gsva",
@@ -196,7 +198,7 @@ wnt_sigs <- list(
 gsva_scores_wnt <- gsva(exprs(eSet),
                           wnt_sigs,
                           method  = "gsva",
-                          kcdf    = "Poisson",
+                          kcdf    = "Poisson",   # use "Gaussian" for log-normalized data
                           verbose = FALSE)
 
 annot_col <- data.frame(Group = eSet$Group, row.names = colnames(eSet))

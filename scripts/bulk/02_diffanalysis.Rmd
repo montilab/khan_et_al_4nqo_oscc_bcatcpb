@@ -52,11 +52,13 @@ table(eSet$Group)
 ```{r helper-functions}
 # Hierarchical clustering with optimal leaf ordering (S. Monti / D. Gusenleitner)
 hcopt <- function(d, HC = NULL, method = "ward.D", members = NULL) {
-  require("cba")
+  if (!requireNamespace("cba", quietly = TRUE)) {
+    stop("Package 'cba' is required but not installed. Install with: install.packages('cba')")
+  }
   if (is.null(HC)) {
     HC <- hclust(d, method = method, members = members)
   }
-  ORD    <- order.optimal(d, merge = HC$merge)
+  ORD    <- cba::order.optimal(d, merge = HC$merge)
   HC$merge <- ORD$merge
   HC$order <- ORD$order
   HC

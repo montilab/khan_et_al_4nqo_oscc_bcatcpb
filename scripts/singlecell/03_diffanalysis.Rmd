@@ -49,6 +49,10 @@ table(seurat_merged$group, seurat_merged$cell_type)
 ```
 
 ```{r helper-functions}
+# NOTE: This function subsets the Seurat object per cell type and comparison,
+# which creates temporary copies in memory. This is intentional to ensure each
+# DE test is cleanly isolated to the relevant cells; for very large datasets
+# consider pre-splitting by cell type to avoid repeated subsetting.
 run_mast <- function(seurat_obj, cell_type_col = "cell_type",
                       group_col = "group", ident1, ident2,
                       cell_type = NULL, min_cells = 10) {

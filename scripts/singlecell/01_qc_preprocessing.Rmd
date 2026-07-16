@@ -49,12 +49,11 @@ sample_meta <- data.frame(
   group     = c("Control",  "Control",
                  "4NQO",     "4NQO",
                  "4NQO_CPB", "4NQO_CPB"),
-  path      = file.path(PATH, "data", "cellranger",
-                         c("Control_1", "Control_2",
-                           "4NQO_1",    "4NQO_2",
-                           "4NQO_CPB_1","4NQO_CPB_2"),
-                         "filtered_feature_bc_matrix")
+  stringsAsFactors = FALSE
 )
+sample_meta$path <- file.path(PATH, "data", "cellranger",
+                               sample_meta$sample_id,
+                               "filtered_feature_bc_matrix")
 DT::datatable(sample_meta[, c("sample_id", "group")],
                caption = "Sample Metadata")
 ```

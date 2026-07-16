@@ -171,7 +171,9 @@ DoHeatmap(seurat_merged,
 
 ```{r assign-celltypes}
 # Assign cell type labels based on marker expression and cluster inspection
-# (To be updated after visual inspection of marker plots)
+# NOTE: This mapping is resolution-dependent (resolution = 0.5, set in the
+# clustering chunk above). If clustering parameters are modified, cluster
+# numbers will change and this mapping must be re-verified against marker plots.
 cluster_to_celltype <- c(
   "0"  = "Epithelial",
   "1"  = "Epithelial",
