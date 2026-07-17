@@ -1,0 +1,9 @@
+cff-version: 1.1.0
+message: "If you use this software, please cite it as below."
+authors:
+- family-names: Monti
+  given-names: Stefano
+orcid: https://orcid.org/0000-0002-9376-0660
+title: montilab/khan_et_al_4nqo_oscc_bcatcpb:v1.0.0
+version: v1.0.0
+date-released: 2026-07-17
